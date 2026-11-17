@@ -1,0 +1,18 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE / 编辑器
+.vscode/
+.idea/
+
+# 日志
+*.log
+
+# 模型与推理图（体积大，不进仓库，另行备份）
+*.pt
+*.pb
+
+# 源码压缩包副本
+auto_match_25/auto_match.zip
