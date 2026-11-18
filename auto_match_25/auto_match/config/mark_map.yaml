@@ -1,0 +1,27 @@
+# 点位配置（单位：米 / 弧度）
+# ==================================================================
+# 上机后二选一填这里：
+#   1) 运行 scripts/pkl2yaml.py，自动从 mark_map.pkl 导出
+#   2) 手动按下面格式填写
+#
+# 格式：名称: {x: 横坐标, y: 纵坐标, yaw: 朝向(弧度)}
+# 说明：
+#   - Step_* 是绕障碍的中间过渡点，用 arrive（只到位置）即可，yaw 可忽略
+#   - Collection_* 是四个角的收取区，抓取/放置需要朝向，yaw 要准
+#   - 本模板为空时，NavigationManager 会自动回退读 mark_map.pkl
+# ==================================================================
+#
+# Collection_A:      {x: 0.0, y: 0.0, yaw: 0.0}
+# Collection_B:      {x: 0.0, y: 0.0, yaw: 0.0}
+# Collection_C:      {x: 0.0, y: 0.0, yaw: 0.0}
+# Collection_D:      {x: 0.0, y: 0.0, yaw: 0.0}
+# Classification_area: {x: 0.0, y: 0.0, yaw: 0.0}
+# Sorting_N:         {x: 0.0, y: 0.0, yaw: 0.0}
+# Sorting_S:         {x: 0.0, y: 0.0, yaw: 0.0}
+# Sorting_E:         {x: 0.0, y: 0.0, yaw: 0.0}
+# Sorting_W:         {x: 0.0, y: 0.0, yaw: 0.0}
+# Sorting_M:         {x: 0.0, y: 0.0, yaw: 0.0}
+# Step_NW:           {x: 0.0, y: 0.0}
+# Step_NE:           {x: 0.0, y: 0.0}
+# Step_SW:           {x: 0.0, y: 0.0}
+# Step_SE:           {x: 0.0, y: 0.0}

@@ -7,5 +7,13 @@ goto_timeout: 60.0
 # 导航失败后的重试次数（总尝试 = max_retries + 1）
 max_retries: 2
 
-# 到点判定阈值(米)，仅 arrive 模式参考
+# arrive 模式到点判定阈值(米)
 reach_threshold: 0.08
+
+# ---- 卡死检测 ----
+stuck_check_interval: 1.0      # 检查间隔(秒)
+stuck_move_threshold: 0.02     # 该间隔内位移小于此值(米)视为"没动"
+stuck_timeout: 8.0             # 连续"没动"超过此时间(秒)判定卡死并取消
+
+# ---- 定位健康 ----
+pose_jump_threshold: 0.5       # 相邻两次检查位姿跳变超过此值(米)视为异常

@@ -1,0 +1,37 @@
+# 路径路由表
+# ==================================================================
+# 把 runtask.py 里硬编码的 Step 点 if-else 抽成配置。
+# 用法：NavigationManager.goto_route(drop_zone, sorting_name, phase)
+#
+# phase:
+#   pickup —— 去分拣点抓取之前，先经过的中间点
+#   drop   —— 抓取后前往放置区之前，先经过的中间点
+#
+# 结构：<phase> -> <目标放置区> -> <分拣点> -> <中间 Step 点>
+# 缺失的组合表示"不需要中间点，直接导航到目标"。
+# 说明：当前内容从 runtask.py 原逻辑原样抽取，上机后按实际场地再调。
+# ==================================================================
+
+to_pickup:
+  Collection_B:
+    Sorting_W: Step_NW
+    Sorting_S: Step_SE
+  Collection_C:
+    Sorting_W: Step_SW
+    Sorting_N: Step_NE
+    Sorting_M: Step_NE
+  Collection_D:
+    Sorting_N: Step_NW
+    Sorting_M: Step_NW
+    Sorting_E: Step_SE
+
+to_drop:
+  Collection_B:
+    Sorting_S: Step_SE
+    Sorting_W: Step_NW
+  Collection_C:
+    Sorting_N: Step_NE
+    Sorting_W: Step_SW
+  Collection_D:
+    Sorting_N: Step_NW
+    Sorting_E: Step_SE
