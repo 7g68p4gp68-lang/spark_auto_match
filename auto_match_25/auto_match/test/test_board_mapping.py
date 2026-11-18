@@ -22,6 +22,7 @@ from board_mapping import (  # noqa: E402
     MappingVoter,
     build_mapping,
     find_duplicate_ids,
+    gap_uniform_ratio,
     normalize_detections,
     zone_for,
 )
@@ -129,6 +130,50 @@ class ZoneForTest(unittest.TestCase):
         self.assertEqual(zone_for({1: 'Collection_C'}, 2), 'Collection_B')
         self.assertEqual(zone_for(None, 2), 'Collection_B')
         self.assertEqual(zone_for({1: 'Collection_C'}, 'bad'), 'Collection_B')
+
+
+class BoardRulesTest(unittest.TestCase):
+    """规则相关：分类板只有玩偶/时钟/香蕉，蛋糕固定 A 区，斜视要能判出来。"""
+
+    def test_include_ids_whitelist(self):
+        dets = [(1, 100, 0.9), (5, 200, 0.9), (3, 300, 0.9), (2, 400, 0.9)]
+        kept = normalize_detections(dets, include_ids=[1, 3, 2])
+        self.assertEqual([d[0] for d in kept], [1, 3, 2])
+
+    def test_gap_uniform_ratio_even(self):
+        items = [(1, 100, 0.9), (3, 200, 0.9), (2, 300, 0.9)]
+        self.assertAlmostEqual(gap_uniform_ratio(items), 1.0)
+
+    def test_gap_uniform_ratio_skewed(self):
+        items = [(1, 100, 0.9), (3, 120, 0.9), (2, 300, 0.9)]
+        self.assertLess(gap_uniform_ratio(items), 0.5)
+
+    def test_voter_rejects_skewed_board(self):
+        voter = MappingVoter(stable_frames=1, min_gap_ratio=0.45)
+        skewed = [(1, 100, 0.9), (3, 115, 0.9), (2, 300, 0.9)]
+        self.assertEqual(voter.update(skewed), (None, 'geometry'))
+
+    def test_voter_accepts_view_with_mild_perspective(self):
+        voter = MappingVoter(stable_frames=1, min_gap_ratio=0.45)
+        mild = [(1, 100, 0.9), (3, 215, 0.9), (2, 300, 0.9)]  # 115 / 85
+        mapping, state = voter.update(mild)
+        self.assertEqual(state, 'stable')
+        self.assertEqual(mapping[1], 'Collection_B')
+
+    def test_cake_goes_to_a_by_fixed_rule(self):
+        # 蛋糕不在板上，但固定 A 区；板上只有另外三种
+        fixed = {5: 'Collection_A'}
+        items = [(1, 100, 0.9), (3, 200, 0.9), (2, 300, 0.9)]
+        mapping = build_mapping(items, fixed=fixed)
+        self.assertEqual(mapping[5], 'Collection_A')
+        self.assertEqual(mapping[1], 'Collection_B')
+
+    def test_voter_publishes_fixed_zone_without_board_item(self):
+        voter = MappingVoter(stable_frames=1, fixed={5: 'Collection_A'})
+        mapping, state = voter.update([(1, 100, 0.9), (3, 200, 0.9), (2, 300, 0.9)])
+        self.assertEqual(state, 'stable')
+        self.assertEqual(mapping, {5: 'Collection_A', 1: 'Collection_B',
+                                   3: 'Collection_C', 2: 'Collection_D'})
 
 
 if __name__ == '__main__':

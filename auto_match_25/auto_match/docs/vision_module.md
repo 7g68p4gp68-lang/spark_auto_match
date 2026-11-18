@@ -1,28 +1,41 @@
 # 视觉感知模块说明（A 组）
 
 > 对应分工表第一行：`detect_ros.py`、`items_config.yaml`、分类板识别（新增）。
-> 最后更新：2026-11-18
+> 依据：《赛项规则拟定版》自动任务赛 + 《夺宝奇兵自动赛-说明文档》
+> 最后更新：2026-11-18（第二轮：按规则对齐）
 
-## 1. 这次改了什么
+## 1. 文件与职责
 
 | 文件 | 状态 | 说明 |
 | --- | --- | --- |
-| `nodes/detect_ros.py` | 重写 | 阈值/模型/推理参数全部从 yaml 读；加帧率上限；错误不再静默吞掉；`/objects` 契约不变 |
-| `config/items_config.yaml` | 扩充 | 新增 `detect` / `board` / `board_fallback_zone` 三段，原有 `items` / `objects` 原样保留 |
-| `nodes/board_mapping.py` | **新增** | 分类板映射的纯逻辑（不依赖 ROS，可单测） |
-| `nodes/board_classifier.py` | **新增** | ROS 节点：`/objects` → `/board_mapping`（`std_msgs/String`，JSON，latched） |
-| `test/test_board_mapping.py` | **新增** | 17 个单元测试，不需要 ROS / 相机 / 模型 |
-| `launch/auto_match.launch` | +3 行 | 启动 `board_classifier` 节点 |
-| `nodes/runtask.py` | +6 处小改 | 与 D 组对接：初始化 `self.mapping`、到分类区后取一次映射、兜底放置区；顺手修掉 `item_id == (99 or 10 or 20 or 30)` |
-| `docs/vision_module.md` | **新增** | 本文件 |
+| `nodes/detect_ros.py` | 重写 | 阈值/模型/推理参数从 yaml 读；帧率上限；重复框合并；类别自检；`/objects` 契约不变 |
+| `config/items_config.yaml` | 扩充 | `items` / `objects` / `detect` / `board` / `board_fallback_zone` |
+| `nodes/board_mapping.py` | 新增 | 分类板映射的纯逻辑（不依赖 ROS，可单测） |
+| `nodes/board_classifier.py` | 新增 | `/objects` → `/board_mapping`（JSON，latched） |
+| `test/test_board_mapping.py` | 新增 | 24 个单元测试，不需要 ROS / 相机 / 模型 |
+| `docs/vision_module.md` | 新增 | 本文件 |
 
-## 2. 数据流
+## 2. 规则对齐（这一轮改动的依据）
+
+规则里和视觉直接相关的条款，以及代码里对应的位置：
+
+| 规则 | 代码对应 | 说明 |
+| --- | --- | --- |
+| 一层 3×3 共 9 块：玩偶×3、时钟×3、香蕉×3，间隔 4.5cm | `detect_ros.py::_merge_duplicates` | 两个模型各检一次会有重复框，重复框会让下游反复挑同一个位置，按 IoU>0.5 合并保高分 |
+| 二层中间 1 块**蛋糕** | `items.cake = 5` | 新增类别；启动时自检模型到底认不认 |
+| 蛋糕**必须先放 A 区**，否则本局不计分 | `board.fixed_by_name: {cake: Collection_A}` | 映射里直接注入 `cake -> Collection_A`，`runtask.py` 的 `self.mapping.get(item_type, ...)` 无需改动就能拿到 A |
+| 分类板 0.34×0.1m，只有**玩偶/时钟/香蕉**三种图案，顺序每局随机 | `board.include_names: [bear, clock, banana]` | 白名单，蛋糕/场地标记/误检都进不了映射 |
+| 板上三格等宽，从左到右 = B/C/D | `board.zones` + `board.min_gap_ratio` | 板子小、易斜视；三格间距明显不均匀就判 `geometry`，不投票 |
+| 分类板每局更换 | 节点 latch（`republish_period`） | **换局要重启 `board_classifier`**，否则会沿用上一局的映射 |
+| 10 分钟要抓 10 块，单块留给识别的时间很短 | `detect.max_rate_hz`、`augment`、`img_size` + 5 秒一次的 fps 日志 | 现场按日志里的 fps 决定要不要关 augment |
+
+## 3. 数据流
 
 ```
 /camera/color/image_raw
         │
         ▼
-   detect_ros.py  ──► /objects (vision_msgs/Detection2DArray)
+   detect_ros.py  ──► /objects (vision_msgs/Detection2DArray，按置信度降序)
         │                 │
         ▼                 ▼
    /debug_image     board_classifier.py ──► /board_mapping (std_msgs/String, latched)
@@ -31,106 +44,79 @@
                                         runtask.py（D 组）
 ```
 
-这样 A 组的三个文件自成闭环：`detect_ros.py` 不认识分类板，`board_classifier.py` 不认识机械臂，
-两边只通过 `/objects` 说话；D 组只读 `/board_mapping`，不需要知道识别是怎么做的。
+## 4. 接口契约
 
-## 3. 接口契约（改动 / 新增的部分）
-
-### 3.1 `/objects`（沿用旧契约，未改字段）
+### 4.1 `/objects`（字段未改，仅顺序变化）
 
 | 字段 | 含义 |
 | --- | --- |
-| `header` | 原始图像的时间戳/坐标系 |
-| `detections[i].results[0].id` | 物品 ID（来自 `items_config.yaml` 的 `items` 段） |
+| `detections[i].results[0].id` | 物品 ID（`items_config.yaml` 的 `items` 段） |
 | `detections[i].results[0].score` | 置信度 |
-| `detections[i].bbox.center.x / y` | 框中心点（像素） |
+| `detections[i].bbox.center.x / y` | 框中心（像素） |
 | `detections[i].bbox.size_x / size_y` | 框宽高（像素） |
 
-**没有过滤场地标记**（`bear_site=10` 等仍会下发），保持和旧版一致，避免影响 mark_move 等已有订阅者。
-分类板节点自己用 `board.ignore_ids` 忽略这些 ID。想让 `/objects` 就干净，把 `detect.filter_ids`
-填成 `[10, 20, 30, 40, 99]` 即可。
+两点变化：
 
-### 3.2 `/board_mapping`（新增）
+* **顺序按置信度从高到低**（以前是模型输出顺序）。语义相同，下游不要依赖顺序。
+* 同一位置若被两个模型各检一次，只发一个（保高分）。
 
-`std_msgs/String`，内容是 JSON，`latch=True`（后启动的订阅者也能立刻收到最后一帧结果）：
+### 4.2 `/board_mapping`（新增）
+
+`std_msgs/String`，JSON，`latch=True`：
 
 ```json
 {
-  "mapping": {"1": "Collection_B", "3": "Collection_C", "2": "Collection_D"},
+  "mapping": {"5": "Collection_A", "3": "Collection_B", "1": "Collection_C", "4": "Collection_D"},
   "zones": ["Collection_B", "Collection_C", "Collection_D"],
   "stable": true,
+  "items": [[3, 120.0], [1, 240.0], [4, 360.0]],
   "stamp": 1763456789.12
 }
 ```
 
-* 键是物品 ID（**字符串**，JSON 限制），值是放置区名字；
-* 只有连续 `board.stable_frames` 帧结果一致才会发布；
-* 板子上少于 `board.expect_num` 个目标时**不发布**，只打 warn。
+* `mapping`：物品 ID（字符串）→ 放置区。**包含蛋糕（固定 A）**，所以 D 直接 `mapping.get(item_type, default)` 即可；
+* `items`：本帧参与映射的 `[id, x]`，调试用；
+* 只有连续 `board.stable_frames` 帧结果一致才发布；数量不足 / 间距不均匀都不发布，只打 warn。
 
-下游用法（已写进 `runtask.py`）：
-
-```python
-msg = rospy.wait_for_message("/board_mapping", String, timeout=10)
-mapping = {int(k): v for k, v in json.loads(msg.data)["mapping"].items()}
-drop_zone = mapping.get(item_type, "Collection_B")
-```
-
-## 4. 配置速查（`config/items_config.yaml`）
+## 5. 配置速查
 
 | 键 | 默认 | 什么时候改 |
 | --- | --- | --- |
 | `detect.conf_thres` | `0.5` | 误检多 → 调高；漏检多 → 调低 |
-| `detect.class_conf` | `{}` | 单个类别单独设阈值，例如 `{clock: 0.6}` |
-| `detect.augment` | `true` | **想提速首选**：改 `false` 一般能快 1.5~2 倍，精度不够再改回 `true` |
-| `detect.img_size` | `640` | 降到 `416/320` 也能提速，小目标（分类板图案）会变差 |
-| `detect.max_rate_hz` | `8.0` | 双模型推理本来就慢，主动丢帧避免 `/objects` 越积越旧；设 `0` 表示不限 |
-| `detect.publish_debug_image` | `true` | 比赛时改 `false`，省带宽和一次图像转换 |
-| `detect.filter_ids` | `[]` | 想让 `/objects` 不下发场地标记就填 `[10, 20, 30, 40, 99]` |
-| `board.zones` | B/C/D | 板子格子顺序变了才改（**从左到右**） |
-| `board.expect_num` | `3` | 板子要求识别几个才完整 |
-| `board.stable_frames` | `3` | 现场抖动大 → 调 5；比赛求快 → 1（不建议） |
-| `board.x_tolerance` | `30` | 同一个框被两个模型各检出一次时去重；板上格子很近就调小 |
-| `board.ignore_ids` | `[10,20,30,40,99]` | 场地标记/底板 ID，不参与映射 |
-| `board.republish_period` | `2.0` | 兜底重发间隔（秒），`0` = 只靠 latch |
-| `board_fallback_zone` | `Collection_B` | 分类板识别失败时的默认放置区 |
+| `detect.class_conf` | `{}` | 单类覆盖，如 `{cake: 0.45}` |
+| `detect.augment` | `true` | **提速首选**：`false` 一般快 1.5~2 倍 |
+| `detect.img_size` | `640` | 降到 `416/320` 也提速，小图案会变差 |
+| `detect.max_rate_hz` | `8.0` | 主动丢帧，防止 `/objects` 越积越旧 |
+| `detect.check_classes` | `[]` | 留空 = 检查 `items` 里所有非 `*_site` / `base` 的类别 |
+| `board.include_names` | `[bear, clock, banana]` | 板上图案种类变了才改 |
+| `board.fixed_by_name` | `{cake: Collection_A}` | 规则改了蛋糕归属才改 |
+| `board.min_gap_ratio` | `0.45` | 老是判 `geometry` → 降到 `0.35` 或设 `0` 关掉 |
+| `board.stable_frames` | `3` | 现场抖动大 → 5 |
+| `board.x_tolerance` | `30` | 板子离得近、图案挤在一起 → 调小 |
+| `board_fallback_zone` | `Collection_B` | 识别失败时 B/C/D 的兜底 |
 
-## 5. 上机步骤（ROS Noetic）
+## 6. 上机步骤与验证
 
 ```bash
-# 1) 拷文件进工作空间（只覆盖这几个文件，其它不要动）
-cp auto_match_25/auto_match/nodes/detect_ros.py        ~/catkin_ws/src/auto_match/nodes/
-cp auto_match_25/auto_match/nodes/board_classifier.py  ~/catkin_ws/src/auto_match/nodes/
-cp auto_match_25/auto_match/nodes/board_mapping.py     ~/catkin_ws/src/auto_match/nodes/
-cp auto_match_25/auto_match/config/items_config.yaml   ~/catkin_ws/src/auto_match/config/
-cp auto_match_25/auto_match/nodes/runtask.py           ~/catkin_ws/src/auto_match/nodes/   # D 组确认后再覆盖
-mkdir -p ~/catkin_ws/src/auto_match/test ~/catkin_ws/src/auto_match/docs
-cp auto_match_25/auto_match/test/test_board_mapping.py ~/catkin_ws/src/auto_match/test/
-cp auto_match_25/auto_match/docs/vision_module.md      ~/catkin_ws/src/auto_match/docs/
-
-# 2) 加执行权限（launch 用 type= 启动，靠的就是执行位）
-chmod +x ~/catkin_ws/src/auto_match/nodes/board_classifier.py
-chmod +x ~/catkin_ws/src/auto_match/nodes/board_mapping.py
-
-# 3) 编译（纯 python 节点，只是刷新环境）
+cd ~/catkin_ws/src/auto_match && git pull
+chmod +x nodes/board_classifier.py nodes/board_mapping.py
 cd ~/catkin_ws && catkin_make && source devel/setup.bash
-```
 
-### 验证顺序（建议按这个次序，出问题容易定位）
+# a. 单测（不用 ROS）
+cd src/auto_match && python3 -m unittest discover -s test -v      # 24 passed
 
-```bash
-# a. 单测（不用 ROS，先确认逻辑没写错）
-cd ~/catkin_ws/src/auto_match && python3 -m unittest discover -s test -v
-
-# b. 只看识别
+# b. 只看识别：启动日志里先看「模型类别自检」
 rosrun auto_match detect_ros.py
-rostopic hz /objects            # 应该有频率；0Hz 说明模型没加载（看终端 rospy.logfatal）
-rostopic echo /objects -n1      # 确认 id/score/bbox 有值
+#   期待看到：模型类别自检通过: ['bear', 'wine', 'clock', 'banana', 'cake']
+#   若报「模型缺少这些类别 ... ['cake']」，说明权重里没有蛋糕，二层那块抓不到
+rostopic hz /objects
+rostopic echo /objects -n1
 
 # c. 对着分类板看映射
 rosrun auto_match board_classifier.py
-rostopic echo /board_mapping    # 板子摆好后应出现 JSON；不稳就调 stable_frames
-# 台架上想"出结果就退出"：
-rosrun auto_match board_classifier.py _single_shot:=true
+rostopic echo /board_mapping
+#   期望：{"mapping": {"5": "Collection_A", ...}, "items": [[...]], "stable": true}
+#   只有两种图案时不会发布，日志会打「本帧 N 个，需要 3 个」
 
 # d. 整套
 roslaunch auto_match auto_match.launch
@@ -138,28 +124,57 @@ roslaunch auto_match auto_match.launch
 
 判读要点：
 
-* `detect_ros.py` 起不来并且报 `没有任何可用模型` → 检查 `~/auto.pt`、`~/banana.pt` 是否真的存在；
-* `/objects` 有频率但 `detections` 一直是空 → 看 `rostopic echo /debug_image`（或 rviz）画的框，
-  大概率是 `conf_thres` 太高或模型类别名和 `items` 里的键不一致（类别名必须是 `bear/wine/clock/banana`）；
-* `/board_mapping` 一直不出现 → 板子没摆正、图案没被检出（`board.expect_num` 是 3），看 warn 日志里的
-  「本帧 N 个」。
+* 日志 `检测帧率 x.x fps`：低于 1.5 fps 就建议把 `augment` 关掉；
+* `白名单外的检测已忽略: ids=[5]`：蛋糕被检到了，正常（它本来就不该上板）；
+* `分类板三格间距不均匀(0.3x)`：机器人站位偏了，或者少检了一个图案。
 
-## 6. 已知风险 / 前提
+## 7. 已知风险 / 前提
 
-1. **模型文件不在仓库里**（`auto.pt`、`banana.pt`），旧代码也是从 `$HOME` 读。现在缺失会在启动时报
-   `rospy.logfatal` 并 `exit(2)`，不会再"看起来在跑其实什么都没检测"。
-2. `vision_msgs` 的 `ObjectHypothesisWithPose.id` 在 Noetic 是整型；如果你们装的版本是字符串型，
-   `board_mapping.normalize_detections` 里的 `int(item_id)` 也能兜住，但 `detect_ros.py` 里
-   `hypothesis.id = item_id` 需要改成 `str(item_id)`，改一行即可。
-3. 分类板节点的 `single_shot`、`stable_frames` 都可通过 rosparam 覆盖，不用改代码：
-   `rosrun auto_match board_classifier.py _stable_frames:=5`。
-4. `runtask.py` 里旧的 `detect_classification_board()` 保留没删（兜底用），但它的 `(99 or 10 or 20 or 30)`
-   已修正为 `in (10, 20, 30, 40, 99)`。确认新流程稳定后可以整段删掉。
+1. **模型文件不在仓库**（`auto.pt` / `banana.pt`），旧代码同样从 `$HOME` 读。缺失会 `logfatal` + `exit(2)`。
+2. **`cake` 这一类的权重是否存在？** 规则里第四类物品是蛋糕，但旧代码/旧模型是 `wine`。
+   现在 `items` 里两者都保留，`objects_d` 指向 `cake`。如果模型没有 cake：
+   * 启动日志会明确告警；
+   * 需要重训/换权重，或把 `objects_d` 改回 `wine`（一行）先保证能抓三样。
+3. `vision_msgs` 的 `ObjectHypothesisWithPose.id` 在 Noetic 是整型；若装的是字符串型，`detect_ros.py` 里改一行 `str(item_id)`。
+4. **换局必须重启 `board_classifier`**（latch 会保留上一局的映射）。
 
-## 7. 和另外三个人怎么不撞车
+## 8. 给 D 组的必改项（不属于 A 的代码，但会直接丢分）
+
+规则原文：**「赛队进行金砖抓取时，需首先将蛋糕金砖放入得分区 A 区，否则蛋糕金砖本局比赛不计入得分。」**
+
+现在 `runtask.py` 的顺序是：
+
+```python
+if total_drop_times == 8:
+    drop_zone = "Collection_A"      # 第 9 次才送 A
+elif item_type != self.BANANA_ID:
+    drop_zone = self.mapping.get(item_type, self.default_zone)
+```
+
+三个问题：
+
+1. **蛋糕被放在第 9 次**才送 A → 按规则本局蛋糕 0 分；
+2. 这个分支原来假设「二层是香蕉」，规则里二层是**蛋糕**；
+3. `item_type != self.BANANA_ID` 这个判断应该是 `item_type != self.CAKE_ID`。
+
+建议改法（`runtask.py`，D 组确认后合）：
+
+```python
+self.CAKE_ID = 5      # items_config.yaml 里 cake: 5
+
+# 第一件事：先去二层抓蛋糕，放 A
+if total_drop_times == 0:
+    item_type = self.arm.grasp1()          # 二层
+    drop_zone = "Collection_A"
+elif item_type != self.CAKE_ID:
+    drop_zone = self.mapping.get(item_type, self.default_zone)
+```
+
+对应的调度顺序也要改：第一次循环先走 `grasp1()`（二层），之后 9 次走一层 `grasp()`。
+A 组这边已经把 `cake -> Collection_A` 注入 `/board_mapping`，D 只要处理「顺序」，不用自己查 A 区。
+
+## 9. 和另外三个人怎么不撞车
 
 * A 独占：`nodes/detect_ros.py`、`config/items_config.yaml`、`nodes/board_*.py`、`test/`、`docs/vision_module.md`。
-* `runtask.py` 是 D 的文件：这次只加了 6 处（import、`__init__` 初始化、两个小方法、调用一次、兜底区），
-  都集中在一处，D 可以自己 merge，也可以整段不要——不要的话 `/board_mapping` 只是没人用，
-  A 的模块本身仍然能单独跑、单独验证。
-* 不要在这几个文件里 import D 的 `RobotMoveAction`、也不要直接调 `self.robot`，保持单向依赖（D → A）。
+* `runtask.py` 只加了 6 处对接（import、`__init__` 初始化、两个小方法、调用一次、兜底区）。
+* 不在这几个文件里 import D 的 `RobotMoveAction`，保持单向依赖（D → A）。

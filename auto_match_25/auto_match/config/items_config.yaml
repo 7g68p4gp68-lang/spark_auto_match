@@ -1,27 +1,35 @@
 # ============================================================
 # 物品 / 识别 / 分类板 配置
 # 负责人：A（视觉感知）  维护：detect_ros.py、board_classifier.py
+# 依据：《赛项规则拟定版》自动任务赛 —— 场地 3x3m，A/B/C/D 四个得分区，
+#       中央金砖区分两层：一层 3x3 共 9 块（玩偶3/时钟3/香蕉3，间隔 4.5cm），
+#       二层中间 1 块蛋糕；分类台（0.4x0.33x0.2m）上放 0.34x0.1m 分类板，
+#       板上是玩偶/时钟/香蕉三种图案，顺序每局随机。
 # 其它模块只读，不要改；改阈值请只改本文件，不要改 .py
 # ============================================================
 
 # 类别名 -> 下发 ID（下游 runtask 用这个 ID 判断物品类型）
 items:
-  bear: 1
-  wine: 2
-  clock: 3
+  bear: 1        # 玩偶
+  wine: 2        # 旧模型的第四类（若你们权重里还有酒/杯子，保留这条用于兼容）
+  clock: 3       # 时钟（一层正中间固定是时钟，方向随机）
+  banana: 4      # 香蕉
+  cake: 5        # 蛋糕：二层中间 1 块，规则要求「第一个放到 A 区」，否则本局不计分
   bear_site: 10
   wine_site: 20
   clock_site: 30
-  base: 99
-  banana: 4
   banana_site: 40
+  cake_site: 50
+  base: 99
 
-# 四个目标物品的类别名（runtask 按 a/b/c/d 顺序取 search_id）
+# 参与抓取的四类物品（runtask 按 a/b/c/d 顺序取 search_id）
+# 规则里这四类是：玩偶 / 时钟 / 香蕉 / 蛋糕。
+# 如果你们的权重只认 wine 不认 cake，把 objects_d 改回 wine 即可（一行）。
 objects:
-  objects_a: clock
-  objects_b: bear
-  objects_c: wine
-  objects_d: banana
+  objects_a: bear
+  objects_b: clock
+  objects_c: banana
+  objects_d: cake
 
 # ============================ 检测 ============================
 detect:
@@ -31,12 +39,13 @@ detect:
 
   # 置信度：低于该值的框直接丢弃
   conf_thres: 0.5
-  # 按类别单独覆盖置信度（例如分类板上的小图案可以放低），留空表示不覆盖
-  # 例： class_conf: {bear: 0.6, clock: 0.55}
+  # 按类别单独覆盖置信度，例： {cake: 0.45, clock: 0.55}
   class_conf: {}
 
   # YOLOv5 推理参数
-  augment: true          # 原代码为 True；想提速度先把它改 false（精度不够再改回来）
+  # 比赛 10 分钟要抓 10 块，单块留给识别的时间很紧；
+  # 想提速先把 augment 改 false（通常快 1.5~2 倍），精度不够再改回来。
+  augment: true
   iou_thres: 0.45
   img_size: 640
 
@@ -50,9 +59,14 @@ detect:
   # 这些 ID 不发布到 /objects（场地标记/底板）。留空 = 全部发布（与旧行为一致）
   filter_ids: []
 
+  # 启动时检查：items 里这些类别是否真的存在于模型权重里。
+  # 缺了会打一条醒目的 warn（例如模型没有 cake，二层那块永远抓不到）。
+  # 留空 = 检查 items 里所有非 *_site / base 的类别。
+  check_classes: []
+
 # =========================== 分类板 ===========================
 # 分类板：三个格子从左到右对应 B/C/D 三个放置区。
-# 板上的图案类别由 detect_ros 识别成 ID 后，由 board_classifier 节点换成映射。
+# 板子尺寸 0.34m x 0.1m，很小，所以对「三格间距是否均匀」有校验，防止斜看时顺序错。
 board:
   enabled: true
 
@@ -68,8 +82,21 @@ board:
   # 两个框中心 x 距离小于该像素值视为同一个物体，去重
   x_tolerance: 30
 
+  # 三格相邻间距的均匀度下限（最小间距/最大间距）。
+  # 分类板是等宽三格，正视时接近 1.0；斜视或凑数会明显偏小。
+  # 板子离得远、透视很强时可以降到 0.35；老是判 geometry 就先关掉（设 0）。
+  min_gap_ratio: 0.45
+
+  # 只有这些类别会上分类板（规则：玩偶/时钟/香蕉）。按名字写，改名不用改 ID。
+  include_names: [bear, clock, banana]
+
   # 这些 ID 出现在分类板区域时忽略（场地标记/底板）
-  ignore_ids: [10, 20, 30, 40, 99]
+  ignore_ids: [10, 20, 30, 40, 50, 99]
+
+  # 不上分类板、但区域固定的物品：蛋糕固定送 A 区（规则硬性要求）。
+  # 这里注入后，runtask.py 用 self.mapping.get(item_type, ...) 就能直接查到 A 区。
+  fixed_by_name:
+    cake: Collection_A
 
   # 单帧最长等待时间（秒）；超时打印 warn 但不退出
   frame_timeout: 5.0
@@ -77,5 +104,5 @@ board:
   # 稳定后是否周期性重发（秒），0 = 不重发（靠 latch）
   republish_period: 2.0
 
-# 分类板识别失败/超时时的兜底放置区（A 只提供，是否使用由 D 决定）
+# 分类板识别失败/超时时的兜底放置区（只对 B/C/D 三类有意义，蛋糕永远走 A）
 board_fallback_zone: Collection_B

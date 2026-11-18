@@ -103,6 +103,14 @@ class SparkDetect:
         self.iou_thres = float(iou_thres)
         self.img_size = int(img_size)
 
+        # 所有模型能认出的类别名（用于启动时自检，见 Detector.check_model_classes）
+        self.names = set()
+        for model in self.models:
+            try:
+                self.names.update(str(n) for n in model.model.names.values())
+            except Exception:
+                pass
+
     def detect(self, image, draw=True):
         """检测一帧，返回结果对象；image 会被就地画框（draw=True 时）。"""
         result = self.__results__()
@@ -160,6 +168,8 @@ class Detector:
         max_rate = float(detect_cfg.get('max_rate_hz', 0.0) or 0.0)
         self.min_period = (1.0 / max_rate) if max_rate > 0 else 0.0
         self._last_stamp = 0.0
+        self._fps_frames = 0
+        self._fps_t0 = time.time()
 
         self.image_pub = rospy.Publisher("/debug_image", Image, queue_size=1)
         self.object_pub = rospy.Publisher("/objects", Detection2DArray, queue_size=1)
@@ -176,12 +186,85 @@ class Detector:
         self.image_sub = rospy.Subscriber(
             "/camera/color/image_raw", Image, self.image_cb, queue_size=1, buff_size=2 ** 24
         )
+        self.check_model_classes(detect_cfg.get('check_classes') or [])
         rospy.loginfo('detect_ros 就绪: conf=%.2f class_conf=%s filter_ids=%s max_rate=%sHz',
                       self.conf_thres, self.class_conf, sorted(self.filter_ids),
                       '不限' if not self.min_period else '%.1f' % (1.0 / self.min_period))
 
+    def check_model_classes(self, configured):
+        """启动自检：配置里要用到的类别，模型到底认不认。
+
+        典型坑：规则里第四类物品是「蛋糕(cake)」，但权重是上一版训的（只有 wine），
+        缺了不会报错，只会在比赛里表现为「二层那块永远抓不到」，所以这里提前喊出来。
+        """
+        wanted = list(configured) or [
+            name for name in self.items
+            if not name.endswith('_site') and name != 'base'
+        ]
+        missing = [name for name in wanted if name not in self.detector.names]
+        if missing:
+            rospy.logwarn('模型缺少这些类别，对应物品永远无法识别: %s（模型实际有: %s）',
+                          missing, sorted(self.detector.names))
+            for name in missing:
+                if str(name) in self.class_conf:
+                    rospy.logwarn('  class_conf 里为 %r 设了阈值，但模型没有这个类，设置无效', name)
+        else:
+            rospy.loginfo('模型类别自检通过: %s', wanted)
+
     def _threshold_for(self, name):
         return self.class_conf.get(name, self.conf_thres)
+
+    @staticmethod
+    def _iou(a, b):
+        ax1 = a['cx'] - a['w'] / 2.0
+        ay1 = a['cy'] - a['h'] / 2.0
+        ax2 = a['cx'] + a['w'] / 2.0
+        ay2 = a['cy'] + a['h'] / 2.0
+        bx1 = b['cx'] - b['w'] / 2.0
+        by1 = b['cy'] - b['h'] / 2.0
+        bx2 = b['cx'] + b['w'] / 2.0
+        by2 = b['cy'] + b['h'] / 2.0
+        ix = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+        iy = max(0.0, min(ay2, by2) - max(ay1, by1))
+        inter = ix * iy
+        if inter <= 0:
+            return 0.0
+        union = (a['w'] * a['h']) + (b['w'] * b['h']) - inter
+        return inter / union if union > 0 else 0.0
+
+    def _merge_duplicates(self, candidates, iou_thres=0.5):
+        """两个模型都检出同一块金砖时，只保留分数高的那个。
+
+        金砖一层是 3x3、间隔 4.5cm，重复框会让下游按 y 排序时反复挑同一个位置。
+        类别不同但框高度重叠（例如 bear/wine 混淆）也会合并，并打一条 warn 方便回头查。
+        """
+        if len(candidates) < 2:
+            return candidates
+        ordered = sorted(candidates, key=lambda c: c['score'], reverse=True)
+        kept = []
+        for cand in ordered:
+            clash = None
+            for other in kept:
+                if self._iou(cand, other) >= iou_thres:
+                    clash = other
+                    break
+            if clash is not None:
+                if cand['id'] != clash['id']:
+                    rospy.logwarn_throttle(2.0, '同一位置被识别成两类: %s(%.2f) vs %s(%.2f)，保留高分',
+                                           cand['name'], cand['score'], clash['name'], clash['score'])
+                continue
+            kept.append(cand)
+        return kept
+
+    def _log_fps(self, n_detections):
+        """每 5 秒打一次帧率，方便现场判断要不要关 augment / 降 img_size。"""
+        self._fps_frames += 1
+        elapsed = time.time() - self._fps_t0
+        if elapsed >= 5.0:
+            rospy.loginfo('检测帧率 %.1f fps（上次统计后 %d 帧），本帧 %d 个目标',
+                          self._fps_frames / elapsed, self._fps_frames, n_detections)
+            self._fps_frames = 0
+            self._fps_t0 = time.time()
 
     def image_cb(self, data):
         # ---- 主动限帧：双模型推理慢，丢帧比排队更好（排队会让下游拿到旧图） ----
@@ -212,6 +295,7 @@ class Detector:
             return
 
         dropped = 0
+        candidates = []
         for i in range(len(results.name)):
             name = results.name[i]
             if name not in self.items:
@@ -224,21 +308,36 @@ class Detector:
             if results.confidence[i] < self._threshold_for(name):
                 dropped += 1
                 continue
+            candidates.append({
+                'id': item_id,
+                'name': name,
+                'score': float(results.confidence[i]),
+                'cx': int(results.x[i]),
+                'cy': int(results.y[i]),
+                'w': int(results.size_x[i]),
+                'h': int(results.size_y[i]),
+            })
 
+        # 两个模型会各检出同一块金砖（一层 3x3，间隔才 4.5cm，重复框会害抓取选错目标）
+        candidates = self._merge_duplicates(candidates)
+
+        for cand in candidates:
             obj = Detection2D()
             obj.header = data.header
             hypothesis = ObjectHypothesisWithPose()
-            hypothesis.id = item_id
-            hypothesis.score = results.confidence[i]
+            hypothesis.id = cand['id']
+            hypothesis.score = cand['score']
             obj.results.append(hypothesis)
-            obj.bbox.size_y = int(results.size_y[i])
-            obj.bbox.size_x = int(results.size_x[i])
-            obj.bbox.center.x = int(results.x[i])
-            obj.bbox.center.y = int(results.y[i])
+            obj.bbox.size_y = cand['h']
+            obj.bbox.size_x = cand['w']
+            obj.bbox.center.x = cand['cx']
+            obj.bbox.center.y = cand['cy']
             obj_array.detections.append(obj)
 
         if dropped:
             rospy.logdebug_throttle(2.0, '本帧丢弃 %d 个框（非目标/低置信度/filter_ids）', dropped)
+
+        self._log_fps(len(obj_array.detections))
 
         self.object_pub.publish(obj_array)
 
