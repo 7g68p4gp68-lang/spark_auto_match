@@ -138,43 +138,62 @@ roslaunch auto_match auto_match.launch
 3. `vision_msgs` 的 `ObjectHypothesisWithPose.id` 在 Noetic 是整型；若装的是字符串型，`detect_ros.py` 里改一行 `str(item_id)`。
 4. **换局必须重启 `board_classifier`**（latch 会保留上一局的映射）。
 
-## 8. 给 D 组的必改项（不属于 A 的代码，但会直接丢分）
+## 8. 蛋糕优先（已在 `runtask.py` 改，可一键回退）
 
-规则原文：**「赛队进行金砖抓取时，需首先将蛋糕金砖放入得分区 A 区，否则蛋糕金砖本局比赛不计入得分。」**
+规则原文：「赛队进行金砖抓取时，需**首先**将蛋糕金砖放入得分区 A 区，否则蛋糕金砖本局比赛不计入得分。」
 
-现在 `runtask.py` 的顺序是：
+原来 `runtask.py` 是第 9 次（`total_drop_times == 8`）才去二层、才送 A，而且判断用的是 `BANANA_ID`
+——那是旧规则（香蕉固定 A）。现在改成：
 
 ```python
-if total_drop_times == 8:
-    drop_zone = "Collection_A"      # 第 9 次才送 A
-elif item_type != self.BANANA_ID:
+self.CAKE_ID = 5        # items_config.yaml 里 cake: 5
+self.CAKE_FIRST = True  # 想退回旧顺序就改成 False（方便真机对比）
+
+if self.CAKE_FIRST and total_drop_times == 0:
+    item_type = self.arm.grasp1()       # 第一块就上二层
+...
+if item_type == self.CAKE_ID:
+    drop_zone = "Collection_A"          # 蛋糕固定 A
+elif self.CAKE_FIRST and total_drop_times == 0:
+    drop_zone = "Collection_A"          # 第一块没认成蛋糕也先放 A（避免占掉 B/C/D）
+    rospy.logwarn(...)
+else:
     drop_zone = self.mapping.get(item_type, self.default_zone)
 ```
 
-三个问题：
+两点提醒给 D 组：
 
-1. **蛋糕被放在第 9 次**才送 A → 按规则本局蛋糕 0 分；
-2. 这个分支原来假设「二层是香蕉」，规则里二层是**蛋糕**；
-3. `item_type != self.BANANA_ID` 这个判断应该是 `item_type != self.CAKE_ID`。
+1. **第一块就上二层**意味着开局位姿必须能直接吸到二层中间那块；如果 `grasp1()` 依赖某些前置状态
+   （比如机械臂高度、导航点），需要在真机上确认；
+2. 第一块若不是蛋糕（模型缺 `cake` 类时必然如此），代码会**照样送 A**，用 warn 记一笔；
+   这样至少不会把最贵的那一格 B/C/D 占掉，但蛋糕本身仍然拿不到分 —— 根子还是权重缺类。
 
-建议改法（`runtask.py`，D 组确认后合）：
+## 9. 上机前先查权重类别
 
-```python
-self.CAKE_ID = 5      # items_config.yaml 里 cake: 5
-
-# 第一件事：先去二层抓蛋糕，放 A
-if total_drop_times == 0:
-    item_type = self.arm.grasp1()          # 二层
-    drop_zone = "Collection_A"
-elif item_type != self.CAKE_ID:
-    drop_zone = self.mapping.get(item_type, self.default_zone)
+```bash
+python3 tools/inspect_model.py            # 默认查 ~/auto.pt 和 ~/banana.pt
 ```
 
-对应的调度顺序也要改：第一次循环先走 `grasp1()`（二层），之后 9 次走一层 `grasp()`。
-A 组这边已经把 `cake -> Collection_A` 注入 `/board_mapping`，D 只要处理「顺序」，不用自己查 A 区。
+只需要 `torch`，不需要 ROS/yolov5 包，输出形如：
 
-## 9. 和另外三个人怎么不撞车
+```
+== /home/spark/auto.pt ==
+    0  bear
+    1  wine
+    2  clock
+   共 3 类: ['bear', 'clock', 'wine']
 
-* A 独占：`nodes/detect_ros.py`、`config/items_config.yaml`、`nodes/board_*.py`、`test/`、`docs/vision_module.md`。
-* `runtask.py` 只加了 6 处对接（import、`__init__` 初始化、两个小方法、调用一次、兜底区）。
+=== 规则需要的类别自检 ===
+   OK  bear
+   缺! clock ... （示意）
+```
+
+结论里会直接告诉你缺哪类、以及「cake 缺失该怎么临时绕过」。
+
+
+## 10. 和另外三个人怎么不撞车
+
+* A 独占：`nodes/detect_ros.py`、`config/items_config.yaml`、`nodes/board_*.py`、`test/`、`docs/vision_module.md`、`tools/inspect_model.py`。
+* `runtask.py` 现在是 8 处改动：6 处分类板对接 + 蛋糕优先（`self.CAKE_ID` / `self.CAKE_FIRST` + 两处判断）。
+  全部带注释，`CAKE_FIRST = False` 即可退回旧顺序。
 * 不在这几个文件里 import D 的 `RobotMoveAction`，保持单向依赖（D → A）。

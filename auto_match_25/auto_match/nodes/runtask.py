@@ -663,6 +663,12 @@ class AutoAction:
         self.CLOCK_ID  = 3      # clock
         self.CUP_ID    = 2      # wine glass
 
+        # ==== 规则：蛋糕（二层中间那块）必须先放 A 区，否则本局蛋糕不计分 ====
+        # 《赛项规则拟定版》：赛队进行金砖抓取时，需首先将蛋糕金砖放入得分区 A 区。
+        # CAKE_FIRST = False 可以退回旧顺序（第 9 次才去二层），方便对比/回滚。
+        self.CAKE_ID = 5        # items_config.yaml 里 cake: 5
+        self.CAKE_FIRST = True
+
         # ==== 分类板映射（由 A 组 board_classifier.py 发布到 /board_mapping）====
         # D 组只订阅、不改识别逻辑；识别失败时退回 items_config.yaml 的 board_fallback_zone
         self.mapping = {}
@@ -788,7 +794,9 @@ class AutoAction:
             item_type = 0
             if ret: # 判断是否成功到达目标点
                 print("========扫描中，准备抓取===== ")
-                if(total_drop_times == 8):
+                if(self.CAKE_FIRST and total_drop_times == 0):
+                    # 规则要求第一块就放蛋糕：先上二层（grasp1 是二层位姿），再去 A 区
+                    rospy.loginfo("按规则先抓二层蛋糕")
                     item_type = self.arm.grasp1()
                 else: item_type = self.arm.grasp()  # 抓取物品并返回抓取物品的类型
 
@@ -803,9 +811,12 @@ class AutoAction:
             self.arm.arm_grasp_ready()
             print("========前往放置区===== ")
 
-            if total_drop_times == 8:
-                drop_zone = "Collection_A"   # 香蕉固定 A
-            elif item_type != self.BANANA_ID:
+            if item_type == self.CAKE_ID:
+                drop_zone = "Collection_A"   # 蛋糕固定 A 区（规则硬性要求，且必须第一个放）
+            elif self.CAKE_FIRST and total_drop_times == 0:
+                drop_zone = "Collection_A"   # 第一块没认成蛋糕（模型缺 cake 类）也先放 A，避免占用 B/C/D
+                rospy.logwarn(f"第一块未识别为蛋糕(id={item_type})，仍按规则放 A 区")
+            else:
                 # 用分类板识别的结果，找对应放置区
                 drop_zone = self.mapping.get(item_type, self.default_zone) 
             
