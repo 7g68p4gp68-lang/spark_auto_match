@@ -1,0 +1,11 @@
+# 导航模块参数 (NavigationManager 读取)
+# 上机调试时优先改这里，不用改代码
+
+# 单次导航超时(秒)
+goto_timeout: 60.0
+
+# 导航失败后的重试次数（总尝试 = max_retries + 1）
+max_retries: 2
+
+# 到点判定阈值(米)，仅 arrive 模式参考
+reach_threshold: 0.08

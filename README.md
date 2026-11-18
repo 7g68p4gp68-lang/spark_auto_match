@@ -15,6 +15,24 @@
 - `auto_match_25/spark_move/` — 直行 / 转向控制
 - `tools/` — 标定数据（`thefile.txt` / `thefile2.txt`）与桌面工具脚本
 
+## 导航模块（B 负责）
+
+`auto_match/nodes/nav_manager.py` —— `NavigationManager` 封装：
+
+- **接口**：`goto(name, with_orientation=True)` / `arrive(name)` / `step_go(dist)` / `step_back()`
+- **兼容旧接口**：`goto_local(name)` / `arriveto_local(name)`，可一行替换 `runtask.py` 里的 `RobotMoveAction`
+- **状态机**：`IDLE → NAVIGATING → REACHED / FAILED`
+- **异常处理**：导航超时自动取消 + 重试（次数可配）
+- **点位**：优先读 `config/mark_map.yaml`，没有则回退 `config/mark_map.pkl`
+- **参数**：`config/nav_params.yaml`（超时 / 重试 / 阈值），上机只改这里
+
+替换方式（`runtask.py`）：
+
+```python
+from nav_manager import NavigationManager
+self.robot = NavigationManager()   # 原来是 RobotMoveAction()
+```
+
 ## 已知问题（待完善）
 
 1. 识别已换 YOLOv5，但 `yolov5` 包与 `auto.pt` / `banana.pt` 模型缺失。
