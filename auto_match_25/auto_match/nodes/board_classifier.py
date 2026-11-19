@@ -43,6 +43,12 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger, TriggerResponse
 from vision_msgs.msg import Detection2DArray
 
+# catkin_install_python 生成的可执行包装器不能作为普通模块导入。
+# 确保优先从本文件同目录加载纯逻辑 board_mapping.py。
+NODE_DIR = os.path.dirname(os.path.realpath(__file__))
+if NODE_DIR not in sys.path:
+    sys.path.insert(0, NODE_DIR)
+
 from board_mapping import (MappingVoter, DEFAULT_ZONES, find_duplicate_ids,
                            gap_uniform_ratio, normalize_detections)
 
