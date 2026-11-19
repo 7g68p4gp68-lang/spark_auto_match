@@ -1,0 +1,6 @@
+# Install into the Python 3.8 environment used to start roslaunch.
+# ROS Python modules (rospy/cv_bridge/vision_msgs) come from the sourced
+# /opt/ros/noetic and workspace setup files, not from pip.
+ultralytics==8.4.215
+PyYAML>=5.3.1,<7
+rospkg>=1.4,<2

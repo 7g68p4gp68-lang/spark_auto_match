@@ -7,6 +7,7 @@ import _thread
 import threading
 import pickle
 import json
+import time
 
 import rospy
 import rospkg
@@ -19,6 +20,7 @@ from common.msg import MoveStraightDistanceAction, TurnBodyDegreeAction
 # import common.action
 import swiftpro.msg
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from swiftpro.msg import position
 from vision_msgs.msg import Detection2DArray
 import tf
@@ -926,15 +928,46 @@ class AutoAction:
         等分类板识别结果（A 组 board_classifier.py 发布在 /board_mapping）。
         @return {item_id: 'Collection_X'}；超时或解析失败返回 {}，调用处会退回 default_zone
         '''
+        started = time.time()
         try:
-            msg = rospy.wait_for_message("/board_mapping", String, timeout=self.board_timeout)
-            payload = json.loads(msg.data)
-            mapping = {int(k): str(v) for k, v in payload.get("mapping", {}).items()}
-            rospy.loginfo(f"分类板映射: {mapping}")
-            return mapping
+            rospy.wait_for_service("/board_classifier/capture", timeout=min(3.0, self.board_timeout))
+            response = rospy.ServiceProxy("/board_classifier/capture", Trigger)()
+            if not response.success:
+                raise RuntimeError(response.message)
+            capture_id = int(response.message)
         except Exception as exc:
-            rospy.logwarn(f"分类板识别失败({exc})，本场使用兜底放置区 {self.default_zone}")
+            rospy.logwarn(f"无法启动分类板采集({exc})，本场使用兜底放置区 {self.default_zone}")
             return {}
+
+        # latched 话题在新采集完成前会先返回上一局结果，因此必须校验 capture_id。
+        while not rospy.is_shutdown():
+            remaining = self.board_timeout - (time.time() - started)
+            if remaining <= 0:
+                break
+            try:
+                msg = rospy.wait_for_message(
+                    "/board_mapping", String, timeout=min(1.0, remaining))
+                payload = json.loads(msg.data)
+                if int(payload.get("capture_id", -1)) != capture_id:
+                    rospy.sleep(0.05)
+                    continue
+                if not payload.get("stable", False):
+                    rospy.sleep(0.05)
+                    continue
+                mapping = {int(k): str(v) for k, v in payload.get("mapping", {}).items()}
+                if not mapping:
+                    rospy.sleep(0.05)
+                    continue
+                rospy.loginfo(f"分类板映射(capture_id={capture_id}): {mapping}")
+                return mapping
+            except rospy.ROSException:
+                continue
+            except Exception as exc:
+                rospy.logwarn(f"分类板消息解析失败: {exc}")
+                rospy.sleep(0.05)
+
+        rospy.logwarn(f"分类板识别超时，本场使用兜底放置区 {self.default_zone}")
+        return {}
 
     def detect_classification_board(self): 
         rospy.loginfo("开始检测分类版图案...")

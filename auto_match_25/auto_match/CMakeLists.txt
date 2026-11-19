@@ -4,7 +4,20 @@ project(auto_match)
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-find_package(catkin REQUIRED)
+find_package(catkin REQUIRED COMPONENTS
+  actionlib
+  actionlib_msgs
+  common
+  cv_bridge
+  move_base_msgs
+  rospy
+  sensor_msgs
+  std_msgs
+  std_srvs
+  swiftpro
+  tf
+  vision_msgs
+)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -98,7 +111,8 @@ find_package(catkin REQUIRED)
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES spark_movebase
-#  CATKIN_DEPENDS other_catkin_pkg
+  CATKIN_DEPENDS actionlib actionlib_msgs common cv_bridge move_base_msgs rospy
+                 sensor_msgs std_msgs std_srvs swiftpro tf vision_msgs
 #  DEPENDS system_lib
 )
 
@@ -141,10 +155,13 @@ catkin_package(
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-# install(PROGRAMS
-#   scripts/my_python_script
-#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+catkin_install_python(PROGRAMS
+  nodes/board_classifier.py
+  nodes/board_mapping.py
+  nodes/detect_ros.py
+  nodes/runtask.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 ## Mark executables and/or libraries for installation
 # install(TARGETS spark_movebase spark_movebase_node

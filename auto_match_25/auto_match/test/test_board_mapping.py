@@ -121,6 +121,16 @@ class VoterTest(unittest.TestCase):
         mapping, state = voter.update([(1, 100, 0.9), (2, 200, 0.9)])
         self.assertEqual((mapping, state), (None, 'incomplete'))
 
+    def test_extra_detection_does_not_get_silently_truncated(self):
+        voter = MappingVoter(stable_frames=1)
+        frame = [(4, 50, 0.95), (1, 100, 0.9), (2, 200, 0.9), (3, 300, 0.9)]
+        self.assertEqual(voter.update(frame), (None, 'extra'))
+
+    def test_duplicate_class_does_not_publish_incomplete_mapping(self):
+        voter = MappingVoter(stable_frames=1)
+        frame = [(1, 100, 0.9), (1, 200, 0.8), (3, 300, 0.9)]
+        self.assertEqual(voter.update(frame), (None, 'duplicate'))
+
 
 class ZoneForTest(unittest.TestCase):
     def test_lookup(self):

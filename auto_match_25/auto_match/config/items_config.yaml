@@ -33,19 +33,30 @@ objects:
 
 # ============================ 检测 ============================
 detect:
-  # 模型路径，允许 ~ / $HOME；两个模型都会跑，结果合并
-  model_auto: ~/auto.pt
-  model_banana: ~/banana.pt
+  # 推理后端：机器人现有 yolo_venv 使用 Ultralytics YOLOv8。
+  # 若以后恢复旧版 yolov5 包和自定义权重，可改成 yolov5。
+  backend: ultralytics
+
+  # 模型路径，允许 ~ / $HOME；非空模型都会运行，结果合并。
+  # 当前机器人只有 ~/yolov8n.pt。正式比赛仍建议换成实际场景训练的 best.pt。
+  model_auto: ~/yolov8n.pt
+  model_banana: null
+
+  # 通用 COCO 模型类别名 -> 项目内部类别名。自定义权重若已经使用右侧名称，可留着不影响。
+  class_aliases:
+    "bear": wild_bear
+    "teddy bear": bear
+    "wine glass": wine
 
   # 置信度：低于该值的框直接丢弃
   conf_thres: 0.5
   # 按类别单独覆盖置信度，例： {cake: 0.45, clock: 0.55}
   class_conf: {}
 
-  # YOLOv5 推理参数
+  # YOLO 推理参数
   # 比赛 10 分钟要抓 10 块，单块留给识别的时间很紧；
   # 想提速先把 augment 改 false（通常快 1.5~2 倍），精度不够再改回来。
-  augment: true
+  augment: false
   iou_thres: 0.45
   img_size: 640
 
@@ -69,6 +80,13 @@ detect:
 # 板子尺寸 0.34m x 0.1m，很小，所以对「三格间距是否均匀」有校验，防止斜看时顺序错。
 board:
   enabled: true
+
+  # 默认等待 runtask 到达分类区后调用 /board_classifier/capture，避免在路上误锁定映射。
+  capture_on_start: false
+
+  # 可选分类板 ROI: [x_min, y_min, x_max, y_max]，空列表表示暂时使用全图。
+  # 上机确定分类区停车位后应填入像素范围，进一步排除中央金砖等干扰。
+  roi: []
 
   # 三个格子从左到右对应的放置区（顺序不能乱）
   zones: [Collection_B, Collection_C, Collection_D]
@@ -100,9 +118,6 @@ board:
 
   # 单帧最长等待时间（秒）；超时打印 warn 但不退出
   frame_timeout: 5.0
-
-  # 稳定后是否周期性重发（秒），0 = 不重发（靠 latch）
-  republish_period: 2.0
 
 # 分类板识别失败/超时时的兜底放置区（只对 B/C/D 三类有意义，蛋糕永远走 A）
 board_fallback_zone: Collection_B

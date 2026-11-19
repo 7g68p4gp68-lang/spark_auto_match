@@ -2,17 +2,17 @@
 
 > 对应分工表第一行：`detect_ros.py`、`items_config.yaml`、分类板识别（新增）。
 > 依据：《赛项规则拟定版》自动任务赛 + 《夺宝奇兵自动赛-说明文档》
-> 最后更新：2026-11-18（第二轮：按规则对齐）
+> 最后更新：2026-11-19（运行环境与分类板采集加固）
 
 ## 1. 文件与职责
 
 | 文件 | 状态 | 说明 |
 | --- | --- | --- |
-| `nodes/detect_ros.py` | 重写 | 阈值/模型/推理参数从 yaml 读；帧率上限；重复框合并；类别自检；`/objects` 契约不变 |
+| `nodes/detect_ros.py` | 重写 | 支持 Ultralytics/旧 yolov5；阈值/模型/推理参数从 yaml 读；帧率上限；重复框合并；类别自检；`/objects` 契约不变 |
 | `config/items_config.yaml` | 扩充 | `items` / `objects` / `detect` / `board` / `board_fallback_zone` |
 | `nodes/board_mapping.py` | 新增 | 分类板映射的纯逻辑（不依赖 ROS，可单测） |
 | `nodes/board_classifier.py` | 新增 | `/objects` → `/board_mapping`（JSON，latched） |
-| `test/test_board_mapping.py` | 新增 | 24 个单元测试，不需要 ROS / 相机 / 模型 |
+| `test/test_board_mapping.py` | 新增 | 26 个单元测试，不需要 ROS / 相机 / 模型 |
 | `docs/vision_module.md` | 新增 | 本文件 |
 
 ## 2. 规则对齐（这一轮改动的依据）
@@ -26,7 +26,7 @@
 | 蛋糕**必须先放 A 区**，否则本局不计分 | `board.fixed_by_name: {cake: Collection_A}` | 映射里直接注入 `cake -> Collection_A`，`runtask.py` 的 `self.mapping.get(item_type, ...)` 无需改动就能拿到 A |
 | 分类板 0.34×0.1m，只有**玩偶/时钟/香蕉**三种图案，顺序每局随机 | `board.include_names: [bear, clock, banana]` | 白名单，蛋糕/场地标记/误检都进不了映射 |
 | 板上三格等宽，从左到右 = B/C/D | `board.zones` + `board.min_gap_ratio` | 板子小、易斜视；三格间距明显不均匀就判 `geometry`，不投票 |
-| 分类板每局更换 | 节点 latch（`republish_period`） | **换局要重启 `board_classifier`**，否则会沿用上一局的映射 |
+| 分类板每局更换 | `/board_classifier/capture` + `capture_id` | 到达分类区后触发新采集，拒绝上一局 latched 结果 |
 | 10 分钟要抓 10 块，单块留给识别的时间很短 | `detect.max_rate_hz`、`augment`、`img_size` + 5 秒一次的 fps 日志 | 现场按日志里的 fps 决定要不要关 augment |
 
 ## 3. 数据流
@@ -39,6 +39,8 @@
         │                 │
         ▼                 ▼
    /debug_image     board_classifier.py ──► /board_mapping (std_msgs/String, latched)
+                                ▲                    │
+                                └── /board_classifier/capture（到达分类区后触发）
                                                 │
                                                 ▼
                                         runtask.py（D 组）
@@ -69,6 +71,7 @@
   "mapping": {"5": "Collection_A", "3": "Collection_B", "1": "Collection_C", "4": "Collection_D"},
   "zones": ["Collection_B", "Collection_C", "Collection_D"],
   "stable": true,
+  "capture_id": 1,
   "items": [[3, 120.0], [1, 240.0], [4, 360.0]],
   "stamp": 1763456789.12
 }
@@ -76,7 +79,8 @@
 
 * `mapping`：物品 ID（字符串）→ 放置区。**包含蛋糕（固定 A）**，所以 D 直接 `mapping.get(item_type, default)` 即可；
 * `items`：本帧参与映射的 `[id, x]`，调试用；
-* 只有连续 `board.stable_frames` 帧结果一致才发布；数量不足 / 间距不均匀都不发布，只打 warn。
+* 只有连续 `board.stable_frames` 帧结果一致才发布；数量不等于三、类别重复或间距不均匀都不发布；
+* `capture_id` 用于区分本次采集和上一局 latched 结果。
 
 ## 5. 配置速查
 
@@ -84,7 +88,8 @@
 | --- | --- | --- |
 | `detect.conf_thres` | `0.5` | 误检多 → 调高；漏检多 → 调低 |
 | `detect.class_conf` | `{}` | 单类覆盖，如 `{cake: 0.45}` |
-| `detect.augment` | `true` | **提速首选**：`false` 一般快 1.5~2 倍 |
+| `detect.backend` | `ultralytics` | 机器人现有 `yolo_venv`；恢复旧环境时可改 `yolov5` |
+| `detect.augment` | `false` | CPU 实时运行默认关闭；精度不足再对比开启 |
 | `detect.img_size` | `640` | 降到 `416/320` 也提速，小图案会变差 |
 | `detect.max_rate_hz` | `8.0` | 主动丢帧，防止 `/objects` 越积越旧 |
 | `detect.check_classes` | `[]` | 留空 = 检查 `items` 里所有非 `*_site` / `base` 的类别 |
@@ -93,14 +98,18 @@
 | `board.min_gap_ratio` | `0.45` | 老是判 `geometry` → 降到 `0.35` 或设 `0` 关掉 |
 | `board.stable_frames` | `3` | 现场抖动大 → 5 |
 | `board.x_tolerance` | `30` | 板子离得近、图案挤在一起 → 调小 |
+| `board.roi` | `[]` | 分类区停车位确定后填 `[x1,y1,x2,y2]`，排除板外目标 |
 | `board_fallback_zone` | `Collection_B` | 识别失败时 B/C/D 的兜底 |
 
 ## 6. 上机步骤与验证
 
 ```bash
-cd ~/catkin_ws/src/auto_match && git pull
-chmod +x nodes/board_classifier.py nodes/board_mapping.py
-cd ~/catkin_ws && catkin_make && source devel/setup.bash
+cd ~/spark_noetic/src/3rd_app/auto_match_25/auto_match
+source ~/yolo_venv/bin/activate
+pip install -r requirements-vision.txt
+cd ~/spark_noetic && catkin_make
+source /opt/ros/noetic/setup.bash
+source ~/spark_noetic/devel/setup.bash
 
 # a. 单测（不用 ROS）
 cd src/auto_match && python3 -m unittest discover -s test -v      # 24 passed
@@ -114,6 +123,7 @@ rostopic echo /objects -n1
 
 # c. 对着分类板看映射
 rosrun auto_match board_classifier.py
+rosservice call /board_classifier/capture
 rostopic echo /board_mapping
 #   期望：{"mapping": {"5": "Collection_A", ...}, "items": [[...]], "stable": true}
 #   只有两种图案时不会发布，日志会打「本帧 N 个，需要 3 个」
@@ -130,13 +140,13 @@ roslaunch auto_match auto_match.launch
 
 ## 7. 已知风险 / 前提
 
-1. **模型文件不在仓库**（`auto.pt` / `banana.pt`），旧代码同样从 `$HOME` 读。缺失会 `logfatal` + `exit(2)`。
+1. **正式比赛权重不在仓库。** 当前机器人只有通用 `~/yolov8n.pt`，可用于打通运行链路，但仍需用 D435 实拍数据训练或验证正式权重。
 2. **`cake` 这一类的权重是否存在？** 规则里第四类物品是蛋糕，但旧代码/旧模型是 `wine`。
    现在 `items` 里两者都保留，`objects_d` 指向 `cake`。如果模型没有 cake：
    * 启动日志会明确告警；
    * 需要重训/换权重，或把 `objects_d` 改回 `wine`（一行）先保证能抓三样。
 3. `vision_msgs` 的 `ObjectHypothesisWithPose.id` 在 Noetic 是整型；若装的是字符串型，`detect_ros.py` 里改一行 `str(item_id)`。
-4. **换局必须重启 `board_classifier`**（latch 会保留上一局的映射）。
+4. 每次到达分类区必须调用 `/board_classifier/capture`；`runtask.py` 已通过 `capture_id` 拒绝上一局的 latched 结果。
 
 ## 8. 蛋糕优先（已在 `runtask.py` 改，可一键回退）
 
@@ -171,13 +181,13 @@ else:
 ## 9. 上机前先查权重类别
 
 ```bash
-python3 tools/inspect_model.py            # 默认查 ~/auto.pt 和 ~/banana.pt
+python3 tools/inspect_model.py            # 默认查 ~/yolov8n.pt
 ```
 
-只需要 `torch`，不需要 ROS/yolov5 包，输出形如：
+在 `yolo_venv` 中运行，优先使用 Ultralytics，旧 YOLOv5 权重会回退到 torch 读取，输出形如：
 
 ```
-== /home/spark/auto.pt ==
+== /home/spark/yolov8n.pt ==
     0  bear
     1  wine
     2  clock
