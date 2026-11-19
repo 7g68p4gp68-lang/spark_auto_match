@@ -14,7 +14,6 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   std_srvs
-  swiftpro
   tf
   vision_msgs
 )
@@ -112,7 +111,7 @@ catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES spark_movebase
   CATKIN_DEPENDS actionlib actionlib_msgs common cv_bridge move_base_msgs rospy
-                 sensor_msgs std_msgs std_srvs swiftpro tf vision_msgs
+                 sensor_msgs std_msgs std_srvs tf vision_msgs
 #  DEPENDS system_lib
 )
 
