@@ -26,6 +26,8 @@ from vision_msgs.msg import Detection2DArray
 import tf
 import tf.transformations as tf_transformations
 
+from nav_manager import NavigationManager
+
 class SwiftProInterface:
     def __init__(self):
         # 创建控制机械臂的topic发布者
@@ -136,19 +138,27 @@ class ArmAction:
 
         # 获取标定文件数据/一层
         filename = os.environ['HOME'] + "/thefile.txt"
-        with open(filename, 'r') as f:
-            s = f.read()
-        arr = s.split()
-        self.x_kb = [float(arr[0]), float(arr[1])]
-        self.y_kb = [float(arr[2]), float(arr[3])]    
+        try:
+            with open(filename, 'r') as f:
+                s = f.read()
+            arr = s.split()
+            self.x_kb = [float(arr[0]), float(arr[1])]
+            self.y_kb = [float(arr[2]), float(arr[3])]
+        except Exception as e:
+            rospy.logerr(f"读取一层标定文件失败: {filename} ({e})")
+            raise
 
         # 获取标定文件数据/二层
         filename1 = os.environ['HOME'] + "/thefile2.txt"
-        with open(filename1, 'r') as f1:
-            s1 = f1.read()
-        arr1 = s1.split()
-        self.x_kb1 = [float(arr1[0]), float(arr1[1])]
-        self.y_kb1 = [float(arr1[2]), float(arr1[3])]        
+        try:
+            with open(filename1, 'r') as f1:
+                s1 = f1.read()
+            arr1 = s1.split()
+            self.x_kb1 = [float(arr1[0]), float(arr1[1])]
+            self.y_kb1 = [float(arr1[2]), float(arr1[3])]
+        except Exception as e:
+            rospy.logerr(f"读取二层标定文件失败: {filename1} ({e})")
+            raise
     
         # 创建机械臂控制接口的对象
         self.interface = SwiftProInterface()
@@ -531,7 +541,10 @@ class RobotMoveAction:
 
 
         # 创建获取spark前后距离的service客户端
-        rospy.wait_for_service('/get_distance')
+        try:
+            rospy.wait_for_service('/get_distance', timeout=5.0)
+        except rospy.ROSException:
+            rospy.logwarn("/get_distance 服务未就绪，step_back 可能受影响")
         self.distance_srv = rospy.ServiceProxy(
             'get_distance', common.srv.GetFrontBackDistance)
 
@@ -654,8 +667,9 @@ class AutoAction:
         try: self.arm = ArmAction()
         except Exception as e:  print("except arm:",e)
         print("========实例化Arm===== ")
-        # 实例化Robot
-        try: self.robot = RobotMoveAction()
+        # 实例化导航模块（NavigationManager：直接调 move_base action，带超时/卡死/重试）
+        # 原 RobotMoveAction 类保留在下方，需要时可切回
+        try: self.robot = NavigationManager()
         except Exception as e:  print("except robot:",e)
         print("========实例化Robot===== ")
         
@@ -749,6 +763,9 @@ class AutoAction:
 
             if total_drop_times == 10:
                 break
+            if not sorting_status_times:
+                rospy.logwarn("所有分拣点已耗尽，提前结束任务")
+                break
             else:
                 sorting_name = list(sorting_status_times.keys())[0]
 
@@ -786,7 +803,7 @@ class AutoAction:
                         ret = self.robot.arriveto_local('Step_SE')
 
                         
-            ret = self.robot.goto_local("Collection_A") # 导航到目标点
+            ret = self.robot.goto_local(sorting_name)  # 导航到分拣点抓取（原误写为 Collection_A）
             at_sorting =True
             rospy.sleep(1) # 停稳
 
@@ -860,8 +877,11 @@ class AutoAction:
                     self.arm.drop1()  # 放下物品
                     drop_times[drop_zone] += 1
 
-                elif drop_times[drop_zone] == 2:
+                elif drop_times[drop_zone] >= 2:
+                    if drop_times[drop_zone] > 2:
+                        rospy.logwarn(f"{drop_zone} 已堆 {drop_times[drop_zone]} 层，继续用二层位姿放置，注意别撞")
                     self.arm.drop2()  # 放下物品
+                    drop_times[drop_zone] += 1
                     
                 self.robot.step_back()  # 后退
                 if self.stop_flag: return
@@ -970,6 +990,8 @@ class AutoAction:
         return {}
 
     def detect_classification_board(self): 
+        # 已废弃：现由 wait_board_mapping() 从 /board_mapping 读取（A 组 board_classifier 发布）。
+        # 保留仅为兼容/参考，run_task 不再调用。
         rospy.loginfo("开始检测分类版图案...")
 
         zones = ["Collection_B", "Collection_C", "Collection_D"]
