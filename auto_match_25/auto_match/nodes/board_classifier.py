@@ -69,27 +69,27 @@ DEFAULT_BOARD = {
 
 
 def load_config():
-    """读 items_config.yaml；返回 (board 配置, 物品名->ID 表)。找不到就用默认值。"""
-    path = None
+    """读 items_config.yaml；配置缺失时拒绝输出可能错误的映射。"""
     try:
         path = os.path.join(rospkg.RosPack().get_path("auto_match"), "config", "items_config.yaml")
-    except Exception as exc:  # rospkg 找不到包时（例如在笔记本上试跑）
-        rospy.logwarn("找不到 auto_match 包路径，使用默认配置: %s", exc)
+        with open(path, "r", encoding="utf8") as fp:
+            content = yaml.safe_load(fp.read()) or {}
+    except Exception as exc:
+        raise RuntimeError("分类板配置不可用: %s" % exc)
 
-    items = {}
-    if path and os.path.isfile(path):
-        try:
-            with open(path, "r", encoding="utf8") as fp:
-                content = yaml.safe_load(fp.read()) or {}
-        except Exception as exc:
-            rospy.logerr("读取 %s 失败，使用默认配置: %s", path, exc)
-            return dict(DEFAULT_BOARD), items
-
-        items = content.get("items") or {}
-        cfg = dict(DEFAULT_BOARD)
-        cfg.update({k: v for k, v in (content.get("board") or {}).items() if v is not None})
-        return cfg, items
-    return dict(DEFAULT_BOARD), items
+    items = content.get("items") or {}
+    cfg = dict(DEFAULT_BOARD)
+    cfg.update({k: v for k, v in (content.get("board") or {}).items() if v is not None})
+    if cfg.get("enabled", True):
+        zones = list(cfg.get("zones") or [])
+        names = list(cfg.get("include_names") or [])
+        if zones != list(DEFAULT_ZONES):
+            raise ValueError("分类板区域必须按左到右为 B/C/D: %r" % zones)
+        if len(names) != 3 or len(set(names)) != 3 or any(name not in items for name in names):
+            raise ValueError("board.include_names 必须是三种已配置且不重复的图案")
+        if int(cfg.get("expect_num", 0)) != 3:
+            raise ValueError("board.expect_num 必须为 3")
+    return cfg, items
 
 
 def resolve_ids(names, items):
@@ -144,6 +144,12 @@ class BoardClassifier(object):
         self.zones = list(cfg["zones"])
         self.frame_timeout = float(cfg["frame_timeout"])
         self.roi = list(cfg.get("roi") or [])
+        if self.roi and (len(self.roi) != 4 or
+                         float(self.roi[0]) >= float(self.roi[2]) or
+                         float(self.roi[1]) >= float(self.roi[3])):
+            raise ValueError("board.roi 必须为 [x_min, y_min, x_max, y_max] 且范围有效")
+        if not self.roi:
+            rospy.logwarn("分类板 ROI 未标定，当前扫描全画面；现场请确认板子区域后填写 board.roi")
         self.single_shot = bool(rospy.get_param("~single_shot", False))
 
         if not self.enabled:

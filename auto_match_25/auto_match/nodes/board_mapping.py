@@ -165,20 +165,24 @@ class MappingVoter(object):
         items = normalize_detections(detections, self.ignore_ids, self.x_tolerance,
                                      self.include_ids)
         if len(items) < self.expect_num:
+            self._history = []
             return None, "incomplete"
         if len(items) > self.expect_num:
             # 分类板按规则只有固定数量的格子。静默截断会把场景里的真实物体
             # 当成板上图案，宁可拒绝这一帧，也不要发布错误映射。
+            self._history = []
             return None, "extra"
 
         if find_duplicate_ids(items):
             # 三格应当是三种不同图案。重复类别说明至少有一格被误分类，
             # 即使多帧结果一致也不能当作可靠映射。
+            self._history = []
             return None, "duplicate"
 
         if self.min_gap_ratio > 0 and len(items) >= 3:
             ratio = gap_uniform_ratio(items, len(self.zones))
             if ratio < self.min_gap_ratio:
+                self._history = []
                 return None, "geometry"
 
         mapping = build_mapping(items, self.zones, self.fixed)
