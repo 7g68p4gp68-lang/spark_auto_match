@@ -72,12 +72,14 @@ class NavigationManager(object):
 
         # ---- ROS 接口 ----
         self.move_base = actionlib.SimpleActionClient("move_base", MoveBaseAction)
-        if not self.move_base.wait_for_server(rospy.Duration(20)):
+        self.move_base_ready = self.move_base.wait_for_server(rospy.Duration(20))
+        if not self.move_base_ready:
             rospy.logwarn("[Nav] move_base 服务未就绪")
 
         self.move_straight = actionlib.SimpleActionClient(
             "move_straight", MoveStraightDistanceAction)
-        if not self.move_straight.wait_for_server(rospy.Duration(5)):
+        self.move_straight_ready = self.move_straight.wait_for_server(rospy.Duration(5))
+        if not self.move_straight_ready:
             rospy.logwarn("[Nav] move_straight 服务未就绪")
 
         self.tf_listener = tf.TransformListener()
@@ -115,14 +117,33 @@ class NavigationManager(object):
                 with open(yaml_path, "r", encoding="utf8") as f:
                     data = yaml.safe_load(f)
                 if data:
-                    return data
+                    return self._normalize_marks(data)
             if os.path.exists(pkl_path):
                 with open(pkl_path, "rb") as f:
-                    return pickle.load(f)
+                    return self._normalize_marks(pickle.load(f))
         except Exception as e:
             rospy.logerr("[Nav] 加载点位失败: %s", e)
         rospy.logwarn("[Nav] 未找到有效点位文件")
         return {}
+
+    @staticmethod
+    def _normalize_mark_name(name):
+        """兼容旧 mark_move 把 ROS String 的引号一并写入 pkl 的历史数据。"""
+        return str(name).strip().strip("\"'").strip()
+
+    @classmethod
+    def _normalize_marks(cls, marks):
+        normalized = {}
+        for raw_name, pose in (marks or {}).items():
+            name = cls._normalize_mark_name(raw_name)
+            if not name:
+                continue
+            if name in normalized:
+                raise ValueError("点位名清洗后重复: %r" % name)
+            if name != raw_name:
+                rospy.logwarn("[Nav] 自动清洗旧点位名 %r -> %r", raw_name, name)
+            normalized[name] = pose
+        return normalized
 
     def _load_routes(self):
         path = os.path.join(self.config_dir, "route_table.yaml")
@@ -256,6 +277,22 @@ class NavigationManager(object):
         targets = {name: self.mark_xy(name) for name in sorting_points}
         return nav_route.greedy_order(origin, targets, counts)
 
+    def validate_marks(self, required):
+        missing = [name for name in required if name not in self.marks]
+        if missing:
+            rospy.logerr("[Nav] 缺少必需点位: %s", ", ".join(missing))
+        return missing
+
+    def cancel_all(self):
+        try:
+            self.move_base.cancel_all_goals()
+        except Exception:
+            pass
+        try:
+            self.move_straight.cancel_all_goals()
+        except Exception:
+            pass
+
     def goto(self, name, with_orientation=True, retries=None, timeout=None):
         return self._navigate(name, with_orientation, retries, timeout)
 
@@ -284,8 +321,11 @@ class NavigationManager(object):
         return self.goto(drop_zone), step
 
     def step_go(self, distance):
+        if not self.move_straight_ready:
+            rospy.logerr("[Nav] move_straight 服务未就绪，拒绝直行")
+            return False
         try:
-            self.move_straight.send_goal_and_wait(
+            state = self.move_straight.send_goal_and_wait(
                 common.msg.MoveStraightDistanceGoal(
                     type=common.msg.MoveStraightDistanceGoal.TYPE_ODOM,
                     const_rot_vel=0.15,
@@ -293,13 +333,20 @@ class NavigationManager(object):
                 ),
                 rospy.Duration(5),
             )
+            if state != GoalStatus.SUCCEEDED:
+                rospy.logerr("[Nav] step_go 未成功，action 状态=%s", state)
+                return False
         except Exception as e:
             rospy.logwarn("[Nav] step_go 失败: %s", e)
+            return False
         return True
 
     def step_back(self, distance=0.1):
+        if not self.move_straight_ready:
+            rospy.logerr("[Nav] move_straight 服务未就绪，拒绝后退")
+            return False
         try:
-            self.move_straight.send_goal_and_wait(
+            state = self.move_straight.send_goal_and_wait(
                 common.msg.MoveStraightDistanceGoal(
                     type=common.msg.MoveStraightDistanceGoal.TYPE_ODOM,
                     const_rot_vel=-0.1,
@@ -307,14 +354,22 @@ class NavigationManager(object):
                 ),
                 rospy.Duration(5),
             )
+            if state != GoalStatus.SUCCEEDED:
+                rospy.logerr("[Nav] step_back 未成功，action 状态=%s", state)
+                return False
         except Exception as e:
             rospy.logwarn("[Nav] step_back 失败: %s", e)
+            return False
         return True
 
     # ------------------------------------------------------------------
     # 内部：导航 + 卡死/超时 + 重试
     # ------------------------------------------------------------------
     def _navigate(self, name, with_orientation, retries, timeout):
+        if not self.move_base_ready:
+            rospy.logerr("[Nav] move_base 服务未就绪，拒绝导航到 '%s'", name)
+            self.state = STATE_FAILED
+            return False
         if name not in self.marks:
             rospy.logerr("[Nav] 点位 '%s' 不存在", name)
             self.state = STATE_FAILED

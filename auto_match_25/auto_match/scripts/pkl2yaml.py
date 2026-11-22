@@ -29,10 +29,13 @@ def main():
         data = pickle.load(f)
 
     out = {}
-    for name, mat in data.items():
+    for raw_name, mat in data.items():
+        name = str(raw_name).strip().strip("\"'").strip()
         try:
             t = tft.translation_from_matrix(mat)
             e = tft.euler_from_matrix(mat)
+            if name in out:
+                raise ValueError("清洗后点位名重复: %s" % name)
             out[name] = {
                 "x": round(float(t[0]), 3),
                 "y": round(float(t[1]), 3),

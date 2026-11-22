@@ -22,6 +22,7 @@ import sys
 import time
 
 import cv2
+import numpy as np
 import yaml
 import rospy
 import rospkg
@@ -413,10 +414,22 @@ class Detector:
                 img = results.image
             else:
                 img = cv2.cvtColor(results.image, cv2.COLOR_RGB2BGR)
-            image_out = self.bridge.cv2_to_imgmsg(img, "bgr8")
+            # 机器人视觉 venv 的 OpenCV 5 与 Noetic cv_bridge 的类型表不兼容，
+            # cv2_to_imgmsg 会在 CV_8UC3(16) 上抛 KeyError。这里按 ROS Image
+            # 协议直接构造消息，避免调试图拖垮整个检测回调。
+            img = np.ascontiguousarray(img, dtype=np.uint8)
+            if img.ndim != 3 or img.shape[2] != 3:
+                raise ValueError("调试图必须是 HxWx3，实际 %r" % (img.shape,))
+            image_out = Image()
+            image_out.height = int(img.shape[0])
+            image_out.width = int(img.shape[1])
+            image_out.encoding = "bgr8"
+            image_out.is_bigendian = 0
+            image_out.step = int(img.shape[1] * 3)
+            image_out.data = img.tobytes()
             image_out.header = data.header
             self.image_pub.publish(image_out)
-        except CvBridgeError as exc:
+        except Exception as exc:
             rospy.logerr_throttle(2.0, '调试图发布失败: %s', exc)
 
 

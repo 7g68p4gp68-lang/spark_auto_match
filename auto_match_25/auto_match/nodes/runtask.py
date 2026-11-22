@@ -26,6 +26,12 @@ from vision_msgs.msg import Detection2DArray
 import tf
 import tf.transformations as tf_transformations
 
+# catkin 的 runtask 可执行包装器位于 devel/lib，手写辅助模块仍在 nodes/。
+# 显式优先加入源文件同目录，避免上机时报 No module named nav_manager。
+NODE_DIR = os.path.dirname(os.path.realpath(__file__))
+if NODE_DIR not in sys.path:
+    sys.path.insert(0, NODE_DIR)
+
 from nav_manager import NavigationManager
 
 class SwiftProInterface:
@@ -95,7 +101,7 @@ class CamAction:
             items_content["items"][items_content["objects"]["objects_d"]]
         ]
 
-    def detector(self):
+    def detector(self, allowed_ids=None):
         '''
         获取需要抓取的物品在显示屏上的坐标位置
         @return: 需要抓取的物品列表cube_list
@@ -116,9 +122,12 @@ class CamAction:
             return cube_list
         
         # 提取
+        allowed = set(self.search_id if allowed_ids is None else allowed_ids)
         for obj in obj_array.detections:
+            if not obj.results:
+                continue
             obj_id = obj.results[0].id
-            if obj_id in self.search_id:  # ֻ����Ŀ��ID������
+            if obj_id in allowed:
                 x = obj.bbox.center.x
                 y = obj.bbox.center.y
                 cube_list.append([obj_id, [x, y, 0]])  # ֱ�����ӵ��б�
@@ -224,7 +233,7 @@ class ArmAction:
         return cube_list[0][0]
 
     #抓取二层香蕉代码
-    def grasp1(self):
+    def grasp1(self, allowed_ids=None):
         '''
         使用深度学习找到所需物品在图像上的位置, 估算物品实际位置, 让机械臂抓取
         @return: 抓取到物品的id, 0为未识别到需要的物品
@@ -236,7 +245,7 @@ class ArmAction:
         z = -55
 
         # 寻找物品
-        cube_list = self.cam.detector()
+        cube_list = self.cam.detector(allowed_ids=allowed_ids)
         rospy.loginfo(f"待抓取物体: {cube_list}") 
         rospy.sleep(1)
         if len(cube_list) == 0:
@@ -660,17 +669,14 @@ class AutoAction:
         print("========ready to task===== ")
 
         # 实例化Cam
-        try: self.cam = CamAction()
-        except Exception as e:  print("except cam:",e)
+        self.cam = CamAction()
         print("========实例化Cam===== ")
         # 实例化Arm
-        try: self.arm = ArmAction()
-        except Exception as e:  print("except arm:",e)
+        self.arm = ArmAction()
         print("========实例化Arm===== ")
         # 实例化导航模块（NavigationManager：直接调 move_base action，带超时/卡死/重试）
         # 原 RobotMoveAction 类保留在下方，需要时可切回
-        try: self.robot = NavigationManager()
-        except Exception as e:  print("except robot:",e)
+        self.robot = NavigationManager()
         print("========实例化Robot===== ")
         
         # 物品 ID 映射 (COCO 标准)
@@ -684,6 +690,15 @@ class AutoAction:
         # CAKE_FIRST = False 可以退回旧顺序（第 9 次才去二层），方便对比/回滚。
         self.CAKE_ID = 5        # items_config.yaml 里 cake: 5
         self.CAKE_FIRST = True
+
+        required_marks = [
+            "Classification_area", "Collection_A", "Collection_B", "Collection_C", "Collection_D",
+            "Sorting_W", "Sorting_S", "Sorting_E", "Sorting_N", "Sorting_M",
+            "Step_NW", "Step_NE", "Step_SW", "Step_SE",
+        ]
+        missing = self.robot.validate_marks(required_marks)
+        if missing:
+            raise RuntimeError("缺少必需导航点位: %s；请先标定，禁止启动自动任务" % ", ".join(missing))
 
         # ==== 分类板映射（由 A 组 board_classifier.py 发布到 /board_mapping）====
         # D 组只订阅、不改识别逻辑；识别失败时退回 items_config.yaml 的 board_fallback_zone
@@ -711,7 +726,9 @@ class AutoAction:
         rospy.loginfo("start task now.")
         self.arm.arm_grasp_ready()  # 移动机械臂到其他地方
         # ==== 离开起始区,避免在膨胀区域中，导致导航失败 =====
-        self.robot.step_go(0.3)
+        if not self.robot.step_go(0.3):
+            rospy.logerr("起步失败，终止任务")
+            return
 
         if self.stop_flag: return
 
@@ -728,12 +745,15 @@ class AutoAction:
         # arm_thread.join()
 
         # # ===== 导航到分类区 =====
-        if self.robot.goto_local("Classification_area"):
-            rospy.sleep(2)
-            # 分类板识别：A 的 board_classifier 在跑就能拿到，最多等 board_timeout 秒
-            self.mapping = self.wait_board_mapping()
-        if self.robot.goto_local("Collection_A"):
-            rospy.sleep(2)
+        if not self.robot.goto_local("Classification_area"):
+            rospy.logerr("无法到达分类区，终止任务")
+            return
+        rospy.sleep(2)
+        self.mapping = self.wait_board_mapping()
+        if not self.robot.goto_local("Collection_A"):
+            rospy.logerr("无法到达 Collection_A，终止任务")
+            return
+        rospy.sleep(2)
       
         # 创建任务安排字典，设定前往的抓取地点与次数
         sorting_status_times = {
@@ -772,6 +792,9 @@ class AutoAction:
                 _nearest = self.robot.nearest_mark(_candidates, from_name=drop_zone)
                 sorting_name = _nearest if _nearest in _candidates else _candidates[0]
                 rospy.loginfo(f"就近选择分拣点: {sorting_name} (候选={_candidates}, 起点={drop_zone})")
+                # 规则：第一块(蛋糕)固定去中心 Sorting_M（A 组安全加固保留）
+                if self.CAKE_FIRST and total_drop_times == 0:
+                    sorting_name = "Sorting_M"
 
             # =====导航到目标地点====
             if(at_sorting == False):
@@ -820,13 +843,17 @@ class AutoAction:
                 if(self.CAKE_FIRST and total_drop_times == 0):
                     # 规则要求第一块就放蛋糕：先上二层（grasp1 是二层位姿），再去 A 区
                     rospy.loginfo("按规则先抓二层蛋糕")
-                    item_type = self.arm.grasp1()
+                    item_type = self.arm.grasp1(allowed_ids=[self.CAKE_ID])
                 else: item_type = self.arm.grasp()  # 抓取物品并返回抓取物品的类型
 
                 if self.stop_flag: return
 
             if item_type == 0: # 如果没有识别到物体，将该地点的抓取次数归0
-                sorting_status_times[sorting_name] = 0
+                sorting_status_times.pop(sorting_name, None)
+                at_sorting = False
+                if self.CAKE_FIRST and total_drop_times == 0:
+                    rospy.logerr("Sorting_M 未识别到蛋糕；为避免误抓误放，终止自动任务")
+                    return
                 continue
 
             
@@ -891,7 +918,9 @@ class AutoAction:
                 if self.stop_flag: return
             else:
                 rospy.logerr("task error: navigation to the drop_place fails")
-                self.arm.drop()
+                rospy.logerr("仍吸持物体，禁止原地释放；请人工接管并发送 stop")
+                self.robot.cancel_all()
+                return
             if self.stop_flag: return
 
             # 下一步
@@ -979,7 +1008,10 @@ class AutoAction:
                     rospy.sleep(0.05)
                     continue
                 mapping = {int(k): str(v) for k, v in payload.get("mapping", {}).items()}
-                if not mapping:
+                expected_ids = {self.TEDDY_ID, self.CLOCK_ID, self.BANANA_ID}
+                board_zones = {mapping.get(item_id) for item_id in expected_ids}
+                if board_zones != {"Collection_B", "Collection_C", "Collection_D"}:
+                    rospy.logwarn("分类板映射不完整或区域重复: %s", mapping)
                     rospy.sleep(0.05)
                     continue
                 rospy.loginfo(f"分类板映射(capture_id={capture_id}): {mapping}")
@@ -1032,17 +1064,29 @@ class AutoAction:
             return mapping  # 检测到三个物体后返回
 
     def task_cmd_cb(self,flag):
-        if flag :
+        command = str(flag.data).strip().lower()
+        if command in ("1", "true", "start", "run"):
             if not self.task_run_th.is_alive():
                 self.stop_flag = False
-                self.task_run_th = threading.Thread(target=self.run_task, args=())
+                self.task_run_th = threading.Thread(target=self._run_task_guarded, args=())
+                self.task_run_th.daemon = True
                 self.task_run_th.start()
                 rospy.loginfo("start task!!!")
             else:
-                rospy.logwarn("waiting for thread exit...")
-                self.stop_flag = True
-                self.task_run_th.join()
-                rospy.logwarn("thread exit success")
+                rospy.logwarn("任务已经在运行")
+        elif command in ("0", "false", "stop", "cancel"):
+            self.stop_flag = True
+            self.robot.cancel_all()
+            rospy.logwarn("已请求停止任务并取消导航目标")
+        else:
+            rospy.logwarn("无法识别 task_start_flag=%r；使用 start/stop 或 1/0", flag.data)
+
+    def _run_task_guarded(self):
+        try:
+            self.run_task()
+        except Exception:
+            rospy.logerr("自动任务异常退出", exc_info=True)
+            self.robot.cancel_all()
 
     def grasp_cb(self, msg):
         if not self.task_run_th.is_alive():

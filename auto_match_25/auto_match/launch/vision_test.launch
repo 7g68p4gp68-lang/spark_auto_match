@@ -1,0 +1,19 @@
+<launch>
+  <!-- 只测相机和视觉，不启动底盘、导航或机械臂。 -->
+  <arg name="start_camera" default="false"/>
+  <arg name="image_topic" default="/camera/color/image_raw"/>
+  <arg name="open_rviz" default="false"/>
+
+  <group if="$(arg start_camera)">
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch"/>
+  </group>
+
+  <node pkg="auto_match" name="detect_ros" type="run_detect_ros.sh" output="screen">
+    <remap from="image" to="$(arg image_topic)"/>
+  </node>
+  <node pkg="auto_match" name="board_classifier" type="board_classifier.py" output="screen"/>
+
+  <group if="$(arg open_rviz)">
+    <node pkg="rviz" type="rviz" name="vision_rviz" output="screen"/>
+  </group>
+</launch>

@@ -101,13 +101,22 @@ class VoterTest(unittest.TestCase):
             states.append(voter.update(frame)[1])
         self.assertNotIn('stable', states)
 
-    def test_incomplete_frame_is_ignored(self):
+    def test_incomplete_frame_breaks_consecutive_vote(self):
         voter = MappingVoter(stable_frames=2)
         voter.update(self.frame)
         self.assertEqual(voter.update([(1, 100, 0.9)]), (None, 'incomplete'))
         mapping, state = voter.update(self.frame)
+        self.assertEqual((mapping, state), (None, 'unstable'))
+        mapping, state = voter.update(self.frame)
         self.assertEqual(state, 'stable')
         self.assertEqual(len(mapping), 3)
+
+    def test_geometry_frame_breaks_consecutive_vote(self):
+        voter = MappingVoter(stable_frames=2, min_gap_ratio=0.45)
+        voter.update(self.frame)
+        self.assertEqual(voter.update([(1, 100, 0.9), (2, 110, 0.9),
+                                       (3, 300, 0.9)]), (None, 'geometry'))
+        self.assertEqual(voter.update(self.frame), (None, 'unstable'))
 
     def test_reset_clears_history(self):
         voter = MappingVoter(stable_frames=2)

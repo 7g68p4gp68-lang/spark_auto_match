@@ -44,7 +44,21 @@ class MarkNav():
         rospy.Subscriber('mark_nav', String, self.mark_nav)
         # 定义标记地点字典
         global dict_mark
+        mark_map_path = os.path.join(
+            rospkg.RosPack().get_path('auto_match'), 'config', 'mark_map.pkl')
         dict_mark = {}
+        if os.path.exists(mark_map_path):
+            try:
+                with open(mark_map_path, 'rb') as file:
+                    old_marks = pickle.load(file)
+                dict_mark = {
+                    str(name).strip().strip("\"'").strip(): pose
+                    for name, pose in old_marks.items()
+                }
+                rospy.loginfo("已载入并清洗 %d 个已有点位；新学习会增量更新", len(dict_mark))
+            except Exception as exc:
+                rospy.logerr("已有点位载入失败，为防止覆盖已停止地点记录: %s", exc)
+                raise
         # 监听TF坐标
         self.listener = tf.TransformListener()
         rospy.sleep(1) # need to delay
@@ -58,15 +72,22 @@ class MarkNav():
         rospack = rospkg.RosPack() 
         mark_map_path = os.path.join(rospack.get_path('auto_match'),'config', 'mark_map.pkl')  # 标记地图yaml文件地址
 
-        # 转化成字符型变量
-        mark_name = str(mark_name)
+        # 直接读取 ROS String.data。旧代码 str(msg) 会得到 data: "xxx"，
+        # 再 split 后把末尾引号写进点位名，导致导航永远查不到。
+        mark_name = str(mark_name.data).strip()
+
+        def target_name(command):
+            parts = command.split()
+            return parts[-1].strip().strip("\"'") if len(parts) >= 2 else ""
+        verb = mark_name.split()[0].lower() if mark_name.split() else ""
         # 结束地点标记
-        if str.find(mark_name,str("finish"))!= -1:
+        if verb == "finish":
             # 将字典信息写入 pkl 文件
             with open(mark_map_path, 'wb') as file:
                 pickle.dump(dict_mark, file)
             print("已保存pkl文件,文件保存在:",mark_map_path)
             print("当前字典内容：\n",dict_mark)
+            return
 
 
         # # 前往地点    
@@ -98,58 +119,70 @@ class MarkNav():
         #     else:
         #         print("此地点尚未登陆在字典中")
 
-        if str.find(mark_name, str("go")) != -1:
+        if verb == "go":
             # Print message indicating the start of the `go` operation
             print(f"Starting 'go' operation for target location: {mark_name}")
             
             # Load calibration data
             try:
                 with open(mark_map_path, 'rb') as file:
-                    self.mark_map = pickle.load(file)
+                    loaded = pickle.load(file)
+                self.mark_map = {
+                    str(name).strip().strip("\"'").strip(): pose
+                    for name, pose in loaded.items()
+                }
                 print("Successfully loaded calibration data")
             except Exception as e:
                 print(f"Failed to load calibration data: {e}")
                 return  # Return if data loading fails
             
             # Extract mark name
-            mark_name = (mark_name.split())[2]
+            mark_name = target_name(mark_name)
             
             # Check if the mark exists in the loaded calibration data
             if mark_name in self.mark_map:
                 print(f"Location {mark_name} found, proceeding to navigate")
                 self.navigation(mark_name)  # Navigate to the target location with orientation
+                return
             else:
                 print(f"Location {mark_name} not found in calibration data, please check")
                 return  # Stop if the location doesn't exist in the calibration data
 
-        elif str.find(mark_name, str("arrive")) != -1:
+        elif verb == "arrive":
             # Print message indicating the start of the `arrive` operation
             print(f"Starting 'arrive' operation for target location: {mark_name}")
             
             # Load calibration data
             try:
                 with open(mark_map_path, 'rb') as file:
-                    self.mark_map = pickle.load(file)
+                    loaded = pickle.load(file)
+                self.mark_map = {
+                    str(name).strip().strip("\"'").strip(): pose
+                    for name, pose in loaded.items()
+                }
                 print("Successfully loaded calibration data")
             except Exception as e:
                 print(f"Failed to load calibration data: {e}")
                 return  # Return if data loading fails
             
             # Extract mark name
-            mark_name = (mark_name.split())[2]
+            mark_name = target_name(mark_name)
             
             # Check if the mark exists in the loaded calibration data
             if mark_name in self.mark_map:
                 print(f"Location {mark_name} found, proceeding to arrive at the location")
                 self.navigation1(mark_name)  # Only navigate to the target location without considering orientation
+                return
             else:
                 print(f"Location {mark_name} not found in calibration data, please check")
                 return  # Stop if the location doesn't exist in the calibration data
     
-        self.learning_count += 1
-        
-        if str.find(mark_name, str("learn")) != -1:
-            mark_name = (mark_name.split())[2]
+        if verb == "learn":
+            self.learning_count += 1
+            mark_name = target_name(mark_name)
+            if not mark_name:
+                rospy.logerr("learn 指令缺少点位名，例如: learn Collection_A")
+                return
             
             self.currrent_position = self.get_currect_pose()
 
@@ -160,7 +193,7 @@ class MarkNav():
                 dict_mark[mark_name] = self.currrent_position  
                 print(f"第 {self.learning_count} 次学习，保存位姿: {dict_mark}")
         else:
-            print("无法识别")
+            rospy.logwarn("无法识别 mark_nav 指令: %r", mark_name)
 
     # 获取当前位置
     def get_currect_pose(self):

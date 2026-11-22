@@ -39,7 +39,7 @@ self.robot = NavigationManager()   # 原来是 RobotMoveAction()
 
 1. 机器人当前只有通用 `~/yolov8n.pt`，正式比赛仍需要实际场景数据训练并验证的权重。
 2. 分类板 ROI 需要在分类区停车位确定后填入 `items_config.yaml`。
-3. 香蕉放置分支仍由 D 组完善。
+3. 当前机器人点位表缺少 `Collection_A`，必须在实际场地补标；完整预检会在补标前阻止自动任务启动。
 
 ## A 组（视觉感知）改动 · 2026-11-19
 
@@ -63,3 +63,38 @@ self.robot = NavigationManager()   # 原来是 RobotMoveAction()
 - 视觉环境：`~/yolo_venv`（Python 3.8 + Ultralytics）；先安装
   `auto_match/requirements-vision.txt`，启动前 source ROS 与工作区并激活该环境
 - SSH：`spark@10.25.141.8`（已配置免密）
+
+## 真机测试流程
+
+先运行不会控制任何硬件的预检：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/spark_noetic/devel/setup.bash
+rosrun auto_match robot_preflight.py --mode vision
+rosrun auto_match robot_preflight.py --mode full
+```
+
+任何 `[FAIL]` 都必须先处理。只测试 D435 和视觉链路（不启动底盘、导航或机械臂）：
+
+```bash
+roslaunch auto_match vision_test.launch start_camera:=true
+rosservice call /board_classifier/capture
+```
+
+已有相机节点时使用 `start_camera:=false`，避免重复占用设备。
+
+`mark_move.py` 会先载入已有点位，新学习是增量更新，不会清空其他点位。把机器人停稳在 A 区后补标：
+
+```bash
+rostopic pub -1 /mark_nav std_msgs/String "data: 'learn Collection_A'"
+rostopic pub -1 /mark_nav std_msgs/String "data: 'finish'"
+rosrun auto_match robot_preflight.py --mode full
+```
+
+只有完整预检通过、场地清空且确认只有一组 ROS/硬件进程时，才启动完整任务。任务控制明确使用 `start` / `stop`（也兼容 `1` / `0`）：
+
+```bash
+rostopic pub -1 /task_start_flag std_msgs/String "data: 'start'"
+rostopic pub -1 /task_start_flag std_msgs/String "data: 'stop'"
+```
