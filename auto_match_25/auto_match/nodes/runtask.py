@@ -767,7 +767,11 @@ class AutoAction:
                 rospy.logwarn("所有分拣点已耗尽，提前结束任务")
                 break
             else:
-                sorting_name = list(sorting_status_times.keys())[0]
+                # 就近选点：从上一个放置区(drop_zone)出发，选距离最近的未抓分拣点，减少空跑
+                _candidates = list(sorting_status_times.keys())
+                _nearest = self.robot.nearest_mark(_candidates, from_name=drop_zone)
+                sorting_name = _nearest if _nearest in _candidates else _candidates[0]
+                rospy.loginfo(f"就近选择分拣点: {sorting_name} (候选={_candidates}, 起点={drop_zone})")
 
             # =====导航到目标地点====
             if(at_sorting == False):

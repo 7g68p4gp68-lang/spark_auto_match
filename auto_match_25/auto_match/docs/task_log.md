@@ -1,5 +1,20 @@
 # 任务日志
 
+## 2026-11-22 · B组（导航）
+
+### 新增
+- `nodes/nav_route.py`：路径规划纯逻辑（距离 / 距离矩阵 / 最近点 / 贪心顺序），单测 `test/test_nav_route.py`（7 个用例全过）
+- `nav_manager.py`：新增 `mark_xy` / `distance` / `nearest_mark` / `distance_matrix` / `plan_pickup_order`
+- `scripts/route_report.py`：上机前打印「分拣点 × 放置区」距离矩阵
+
+### 接入
+- `runtask.py`：每次送完区后，用 `nearest_mark` 从上一个放置区（`drop_zone`）**就近选下一个分拣点**（原为 `list(...)[0]` 固定顺序），减少空跑
+
+### 说明
+- 就近选点只在默认分支生效；原有"按 drop_zone 强制选点"的 if 逻辑保留（现场经验）
+- 点位坐标准确时才更快；点位缺失时自动回退第一个候选
+- 需上机验证实际效果
+
 ## 2026-11-19 · B组（导航）/ 自动组
 
 ### 背景
