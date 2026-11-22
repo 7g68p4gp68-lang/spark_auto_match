@@ -36,6 +36,8 @@ from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import common.msg
 from common.msg import MoveStraightDistanceAction
 
+import nav_route
+
 
 STATE_IDLE = "IDLE"
 STATE_NAVIGATING = "NAVIGATING"
@@ -198,6 +200,61 @@ class NavigationManager(object):
     # ------------------------------------------------------------------
     def has_mark(self, name):
         return name in self.marks
+
+    # ------------------------------------------------------------------
+    # 路径规划辅助（调用 nav_route 纯逻辑，可用于调度）
+    # ------------------------------------------------------------------
+    def mark_xy(self, name):
+        """取点位 (x, y)；支持 dict{x,y} 和 4x4 变换矩阵。"""
+        if name not in self.marks:
+            return None
+        m = self.marks[name]
+        if isinstance(m, dict):
+            return (float(m["x"]), float(m["y"]))
+        try:
+            t = tft.translation_from_matrix(m)
+            return (float(t[0]), float(t[1]))
+        except Exception:
+            return None
+
+    def distance(self, a, b):
+        """两个点名之间的距离（米）。"""
+        pa = self.mark_xy(a)
+        pb = self.mark_xy(b)
+        if pa is None or pb is None:
+            return float("inf")
+        return nav_route.distance(pa, pb)
+
+    def nearest_mark(self, candidates, from_name=None):
+        """从 from_name（或机器人当前位置）出发，返回最近的候选点名。"""
+        cand_xy = {name: self.mark_xy(name) for name in candidates}
+        if from_name is not None:
+            origin = self.mark_xy(from_name)
+        else:
+            origin = self.get_position()
+        if origin is None:
+            for name in candidates:
+                if cand_xy.get(name) is not None:
+                    return name
+            return None
+        name, _ = nav_route.nearest(origin, cand_xy)
+        return name
+
+    def distance_matrix(self, origins, targets):
+        """返回 {起点名: {终点名: 距离}}。"""
+        o = {name: self.mark_xy(name) for name in origins}
+        t = {name: self.mark_xy(name) for name in targets}
+        return nav_route.distance_matrix(o, t)
+
+    def plan_pickup_order(self, origin_name, sorting_points, counts):
+        """从 origin_name 出发，按 counts 次数贪心排出抓取点顺序。"""
+        origin = self.mark_xy(origin_name)
+        if origin is None:
+            origin = self.get_position()
+        if origin is None:
+            return []
+        targets = {name: self.mark_xy(name) for name in sorting_points}
+        return nav_route.greedy_order(origin, targets, counts)
 
     def goto(self, name, with_orientation=True, retries=None, timeout=None):
         return self._navigate(name, with_orientation, retries, timeout)
